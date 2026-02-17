@@ -1,0 +1,5 @@
+{
+  "name": "Coral Growth Simulator",
+  "description": "A real-time generative art experience simulating coral growth using Diffusion-Limited Aggregation algorithms. Features a Vogue-minimalist aesthetic and studio lighting.",
+  "requestFramePermissions": []
+}

@@ -24,17 +24,19 @@ export const Experience: React.FC = () => {
           </group>
 
           {/* Lighting Environment */}
-          <ambientLight intensity={0.4} color="#F5F5F0" />
-          <spotLight 
-            position={[50, 50, 50]} 
-            angle={0.15} 
-            penumbra={1} 
-            intensity={1000} 
-            castShadow 
+          <ambientLight intensity={0.8} color="#ffffff" />
+          <directionalLight
+            position={[30, 40, 30]}
+            intensity={1.5}
+            castShadow
             shadow-bias={-0.0001}
-            color="#FFFAF0"
+            color="#ffffff"
           />
-          <pointLight position={[-20, -10, -20]} intensity={200} color="#C9C5BA" />
+          <directionalLight
+            position={[-20, 20, -20]}
+            intensity={0.8}
+            color="#ffffff"
+          />
           
           <ContactShadows 
             position={[0, -15, 0]}
@@ -62,13 +64,12 @@ export const Experience: React.FC = () => {
           </EffectComposer>
         </Suspense>
 
-        <OrbitControls 
-          autoRotate={!isPlaying} // Auto rotate when idle/paused for "Gallery Mode"
-          autoRotateSpeed={0.5}
+        <OrbitControls
+          autoRotate={false}
           enablePan={false}
           minDistance={20}
           maxDistance={150}
-          target={[0, 0, 0]} 
+          target={[0, 0, 0]}
         />
       </Canvas>
     </div>

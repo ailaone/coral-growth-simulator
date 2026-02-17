@@ -1,51 +1,68 @@
 import { create } from 'zustand';
-import { SimulationParams, SimulationType, PRESETS } from './types';
+import { PRESETS, CoralType } from './types';
+import { CoralPreset } from './simulation/types';
 
 export type ViewMode = 'particles' | 'solid';
 
 interface AppState {
   isPlaying: boolean;
-  simulationType: SimulationType;
-  params: SimulationParams;
-  resetTrigger: number; // Increment to trigger reset
+  activePresetKey: CoralType;
+  preset: CoralPreset;
+  resetTrigger: number;
   viewMode: ViewMode;
-  
+  showWireframe: boolean;
+
   // Actions
   setIsPlaying: (isPlaying: boolean) => void;
-  setParams: (params: Partial<SimulationParams>) => void;
-  setPreset: (presetName: string) => void;
+  setParam: (key: string, value: number) => void;
+  setPreset: (presetKey: CoralType) => void;
+  setRenderParam: (params: Partial<Pick<CoralPreset, 'mcResolution' | 'mcIsolation' | 'mcPointInfluence' | 'color' | 'useTexture'>>) => void;
   resetSimulation: () => void;
   togglePlay: () => void;
   setViewMode: (mode: ViewMode) => void;
+  toggleWireframe: () => void;
 }
 
 export const useStore = create<AppState>((set) => ({
   isPlaying: false,
-  simulationType: SimulationType.DLA,
-  params: PRESETS.organic.params,
+  activePresetKey: 'staghorn',
+  preset: { ...PRESETS.staghorn, params: { ...PRESETS.staghorn.params } },
   resetTrigger: 0,
   viewMode: 'particles',
+  showWireframe: false,
 
   setIsPlaying: (isPlaying) => set({ isPlaying }),
-  
-  setParams: (newParams) => set((state) => ({
-    params: { ...state.params, ...newParams }
+
+  setParam: (key, value) => set((state) => ({
+    preset: {
+      ...state.preset,
+      params: { ...state.preset.params, [key]: value }
+    }
   })),
 
-  setPreset: (presetName) => {
-    const preset = PRESETS[presetName];
+  setPreset: (presetKey) => {
+    const preset = PRESETS[presetKey];
     if (preset) {
-      set({ params: preset.params });
+      set({
+        activePresetKey: presetKey,
+        preset: { ...preset, params: { ...preset.params } },
+      });
     }
   },
 
-  resetSimulation: () => set((state) => ({ 
+  setRenderParam: (params) => set((state) => ({
+    preset: { ...state.preset, ...params }
+  })),
+
+  resetSimulation: () => set((state) => ({
     resetTrigger: state.resetTrigger + 1,
     isPlaying: true,
-    viewMode: 'particles' // Reset to particles on new sim
+    viewMode: 'particles',
   })),
 
   togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
-  
+
   setViewMode: (mode) => set({ viewMode: mode }),
+
+  toggleWireframe: () => set((state) => ({ showWireframe: !state.showWireframe })),
 }));

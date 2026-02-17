@@ -1,96 +1,69 @@
-export enum SimulationType {
-  DLA = 'DLA',
-  SpaceColonization = 'SpaceColonization' // Placeholder for future
-}
+import { SliderDef, CoralPreset } from './simulation/types';
 
-export interface SimulationParams {
-  speed: number;        // 1-10
-  complexity: number;   // Max particles 1k - 100k
-  branching: number;    // 0-1 (Affects noise/directionality)
-  noise: number;        // 0-1 (Randomness in walker)
-  
-  // Growth Direction
-  verticalBias: number;   // 0-1 (Influence on growing up)
-  horizontalBias: number; // 0-1 (Influence on spreading out)
+export type CoralType = 'staghorn' | 'brain' | 'fox';
 
-  // Rendering / Marching Cubes
-  mcResolution: number;    // Grid resolution (32-200)
-  mcIsolation: number;     // Threshold (10-200)
-  mcPointInfluence: number; // Size/Influence of each particle (1-50)
-
-  // Material
-  color: string;          // Hex color
-  useTexture: boolean;    // Toggle speckles
-}
-
-export interface Preset {
-  name: string;
-  params: SimulationParams;
-}
-
-export const PRESETS: Record<string, Preset> = {
-  delicate: { 
-    name: 'Delicate', 
-    params: { 
-      complexity: 25000, 
-      branching: 0.85, 
-      speed: 3, 
-      noise: 0.3,
-      verticalBias: 0.8,
-      horizontalBias: 0.3,
-      mcResolution: 128,
-      mcIsolation: 80,
-      mcPointInfluence: 10,
-      color: '#EDE8DC',
-      useTexture: true
-    } 
+export const PRESETS: Record<CoralType, CoralPreset> = {
+  staghorn: {
+    name: 'Staghorn',
+    strategy: 'staghorn',
+    params: {
+      speed: 4,
+      maxParticles: 30000,
+      tipAttraction: 0.5,
+      walkerRandomness: 0.5,
+    },
+    sliders: [
+      { key: 'speed', label: 'Growth Speed', min: 1, max: 10, step: 0.5 },
+      { key: 'maxParticles', label: 'Max Particles', min: 5000, max: 80000, step: 1000 },
+      { key: 'tipAttraction', label: 'Tip Attraction', min: 0, max: 1, step: 0.05, desc: 'How much walkers seek branch tips' },
+      { key: 'walkerRandomness', label: 'Walker Randomness', min: 0.1, max: 1, step: 0.05, desc: 'Randomness of walker paths' },
+    ],
+    mcResolution: 128,
+    mcIsolation: 85,
+    mcPointInfluence: 9,
+    color: '#F5E6D3',
+    useTexture: true,
   },
-  dense: { 
-    name: 'Dense', 
-    params: { 
-      complexity: 80000, 
-      branching: 0.4, 
-      speed: 10, 
-      noise: 0.1,
-      verticalBias: 0.6,
-      horizontalBias: 0.6,
-      mcResolution: 100,
-      mcIsolation: 60,
-      mcPointInfluence: 15,
-      color: '#8B7E74',
-      useTexture: true
-    } 
+  brain: {
+    name: 'Grooved Brain',
+    strategy: 'brain',
+    params: {
+      speed: 8,
+      maxParticles: 80000,
+      surfaceNoise: 0.5,
+      density: 0.5,
+    },
+    sliders: [
+      { key: 'speed', label: 'Growth Speed', min: 1, max: 10, step: 0.5 },
+      { key: 'maxParticles', label: 'Max Particles', min: 5000, max: 100000, step: 1000 },
+      { key: 'surfaceNoise', label: 'Surface Noise', min: 0, max: 1, step: 0.05, desc: 'Noise in growth direction (creates grooves)' },
+      { key: 'density', label: 'Density', min: 0, max: 1, step: 0.05, desc: 'Interior fill threshold' },
+    ],
+    mcResolution: 110,
+    mcIsolation: 55,
+    mcPointInfluence: 18,
+    color: '#C4A06A',
+    useTexture: true,
   },
-  minimal: { 
-    name: 'Minimal', 
-    params: { 
-      complexity: 10000, 
-      branching: 0.1, 
-      speed: 2, 
-      noise: 0.1,
-      verticalBias: 0.9,
-      horizontalBias: 0.1,
-      mcResolution: 80,
-      mcIsolation: 40,
-      mcPointInfluence: 20,
-      color: '#F5F5F0',
-      useTexture: false
-    } 
-  },
-  organic: { 
-    name: 'Organic', 
-    params: { 
-      complexity: 45000, 
-      branching: 0.65, 
-      speed: 6, 
-      noise: 0.5,
-      verticalBias: 0.7,
-      horizontalBias: 0.5,
-      mcResolution: 140,
-      mcIsolation: 90,
-      mcPointInfluence: 8,
-      color: '#E6E2D3',
-      useTexture: true
-    } 
+  fox: {
+    name: 'Fox',
+    strategy: 'fox',
+    params: {
+      speed: 6,
+      maxParticles: 50000,
+      ruffleAmount: 0.6,
+      petalCount: 5,
+    },
+    sliders: [
+      { key: 'speed', label: 'Growth Speed', min: 1, max: 10, step: 0.5 },
+      { key: 'maxParticles', label: 'Max Particles', min: 5000, max: 80000, step: 1000 },
+      { key: 'ruffleAmount', label: 'Ruffle Amount', min: 0.1, max: 1, step: 0.05, desc: 'How wavy the petal folds are' },
+      { key: 'petalCount', label: 'Petal Count', min: 3, max: 8, step: 1, desc: 'Number of ruffled petal folds' },
+    ],
+    mcResolution: 120,
+    mcIsolation: 65,
+    mcPointInfluence: 14,
+    color: '#E8C8D8',
+    useTexture: true,
   },
 };

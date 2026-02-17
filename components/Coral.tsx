@@ -1,281 +1,236 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { InstancedMesh, Object3D, Vector3, MeshBasicMaterial } from 'three';
+import { InstancedMesh, Object3D, MeshBasicMaterial, MeshStandardMaterial, EdgesGeometry, LineSegments, LineBasicMaterial, BufferGeometry } from 'three';
 import { MarchingCubes } from 'three-stdlib';
 import { useStore } from '../store';
 import { CeramicMaterial } from './CeramicMaterial';
+import { GrowthState } from '../simulation/common';
+import { GrowthStrategy } from '../simulation/types';
+import { MC_SIZE, VISUAL_RADIUS, getHash } from '../simulation/common';
+import { staghornStrategy } from '../simulation/staghorn';
+import { brainStrategy } from '../simulation/brain';
+import { foxStrategy } from '../simulation/fox';
 
 const dummy = new Object3D();
-const tempVec = new Vector3();
 
-// Simulation Constants
-const SIM_RADIUS = 0.35;
-const VISUAL_RADIUS = 0.9;
-const CELL_SIZE = SIM_RADIUS * 3; 
-const MC_SIZE = 120; // Bounding box size 
-
-const getHash = (x: number, y: number, z: number) => {
-  return `${Math.round(x / CELL_SIZE)},${Math.round(y / CELL_SIZE)},${Math.round(z / CELL_SIZE)}`;
+const STRATEGIES: Record<string, GrowthStrategy> = {
+  staghorn: staghornStrategy,
+  brain: brainStrategy,
+  fox: foxStrategy,
 };
+
+const MAX_PARTICLES = 100000;
 
 export const Coral: React.FC = () => {
   const meshRef = useRef<InstancedMesh>(null);
-  const { isPlaying, params, resetTrigger, viewMode } = useStore();
-  
-  // Simulation State
-  const countRef = useRef(1);
-  const positionsRef = useRef<Float32Array>(new Float32Array(100000 * 3));
-  const gridRef = useRef<Set<string>>(new Set());
-  
-  // Stable Marching Cubes Instance
-  // Re-create only when resolution changes
-  const mcMesh = useMemo(() => {
-    // Max poly count increased to support high res
-    return new MarchingCubes(params.mcResolution, new MeshBasicMaterial({ color: 0x000000 }), true, true, 800000);
-  }, [params.mcResolution]);
+  const edgesRef = useRef<LineSegments>(null);
+  const edgesGeoRef = useRef<EdgesGeometry | null>(null);
+  const { isPlaying, preset, resetTrigger, viewMode, showWireframe } = useStore();
 
-  // Clean up
+  const edgeMaterial = useMemo(() => new LineBasicMaterial({ color: 0x000000, opacity: 0.3, transparent: true }), []);
+
+  // Simulation state refs
+  const stateRef = useRef<GrowthState>({
+    positions: new Float32Array(MAX_PARTICLES * 3),
+    count: 0,
+    grid: new Set(),
+    maxParticles: MAX_PARTICLES,
+  });
+
+  // Marching Cubes
+  const mcMesh = useMemo(() => {
+    return new MarchingCubes(preset.mcResolution, new MeshBasicMaterial({ color: 0x000000 }), true, true, 800000);
+  }, [preset.mcResolution]);
+
   useEffect(() => {
     return () => {
-        // @ts-ignore
-        if (mcMesh.geometry) mcMesh.geometry.dispose();
-    }
+      // @ts-ignore
+      if (mcMesh.geometry) mcMesh.geometry.dispose();
+      if (edgesGeoRef.current) edgesGeoRef.current.dispose();
+    };
   }, [mcMesh]);
 
-  // Initialize Simulation
+  // Initialize simulation
   const initSimulation = () => {
     if (!meshRef.current) return;
-    
-    countRef.current = 1;
-    gridRef.current.clear();
-    positionsRef.current.fill(0);
-    
-    // Seed at origin (Ground level)
-    positionsRef.current[0] = 0;
-    positionsRef.current[1] = 0;
-    positionsRef.current[2] = 0;
-    gridRef.current.add(getHash(0, 0, 0));
-    
-    // Reset Instanced Mesh
-    dummy.position.set(0, 0, 0);
-    dummy.scale.setScalar(1);
-    dummy.rotation.set(0,0,0);
-    dummy.updateMatrix();
-    meshRef.current.setMatrixAt(0, dummy.matrix);
-    
+
+    const state = stateRef.current;
+    state.count = 0;
+    state.grid.clear();
+    state.positions.fill(0);
+    state.maxParticles = preset.params.maxParticles ?? 30000;
+
+    const strategy = STRATEGIES[preset.strategy];
+    if (!strategy) return;
+
+    // Place seed particles from strategy
+    const seeds = strategy.init(preset.params);
+    for (const [x, y, z] of seeds) {
+      const idx = state.count;
+      state.positions[idx * 3] = x;
+      state.positions[idx * 3 + 1] = y;
+      state.positions[idx * 3 + 2] = z;
+      state.grid.add(getHash(x, y, z));
+      state.count++;
+
+      dummy.position.set(x, y, z);
+      dummy.scale.setScalar(1);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      meshRef.current.setMatrixAt(idx, dummy.matrix);
+    }
+
+    // Clear remaining instances
     dummy.scale.setScalar(0);
     dummy.updateMatrix();
-    for (let i = 1; i < params.complexity; i++) {
+    for (let i = state.count; i < MAX_PARTICLES; i++) {
       meshRef.current.setMatrixAt(i, dummy.matrix);
     }
-    
-    meshRef.current.instanceMatrix.needsUpdate = true;
-    meshRef.current.count = params.complexity;
 
-    // Reset Marching Cubes
-    if (mcMesh) {
-        mcMesh.reset();
-    }
+    meshRef.current.instanceMatrix.needsUpdate = true;
+    meshRef.current.count = MAX_PARTICLES;
+
+    if (mcMesh) mcMesh.reset();
   };
 
   useEffect(() => {
     initSimulation();
   }, [resetTrigger]);
 
-  // Generate Solid Mesh (Shrinkwrap)
+  // Solid mesh generation (unchanged logic)
   const updateSolidMesh = () => {
-    if (!mcMesh || countRef.current < 2) return;
+    if (!mcMesh || stateRef.current.count < 2) return;
 
     mcMesh.reset();
-
-    const field = (mcMesh as any).field as Float32Array; 
-    
-    const strength = params.mcPointInfluence; 
-    const resolution = params.mcResolution;
-    
-    // Helper to map world to grid
+    const field = (mcMesh as any).field as Float32Array;
+    const strength = preset.mcPointInfluence;
+    const resolution = preset.mcResolution;
     const halfSize = MC_SIZE / 2;
     const factor = resolution / MC_SIZE;
-    
+
     field.fill(0);
 
-    const count = countRef.current;
-    const pos = positionsRef.current;
-    
+    const count = stateRef.current.count;
+    const pos = stateRef.current.positions;
     const limit = resolution - 1;
 
-    // Optimization: Don't recalculate everything if particle count is huge
-    // Only loop up to current count
     for (let i = 0; i < count; i++) {
-        const x = pos[i * 3];
-        const y = pos[i * 3 + 1];
-        const z = pos[i * 3 + 2];
+      const x = pos[i * 3];
+      const y = pos[i * 3 + 1];
+      const z = pos[i * 3 + 2];
 
-        // Map to Grid Coords
-        const gx = Math.floor((x + halfSize) * factor);
-        const gy = Math.floor((y + halfSize) * factor);
-        const gz = Math.floor((z + halfSize) * factor);
+      const gx = Math.floor((x + halfSize) * factor);
+      const gy = Math.floor((y + halfSize) * factor);
+      const gz = Math.floor((z + halfSize) * factor);
 
-        // Splat kernel - slightly wider reach for smoothness
-        // 2-voxel radius search
-        for(let dx = -2; dx <= 2; dx++) {
-            for(let dy = -2; dy <= 2; dy++) {
-                for(let dz = -2; dz <= 2; dz++) {
-                     const ix = gx + dx;
-                     const iy = gy + dy;
-                     const iz = gz + dz;
-
-                     if (ix >= 0 && ix < limit && iy >= 0 && iy < limit && iz >= 0 && iz < limit) {
-                         const idx = ix + (iy * resolution) + (iz * resolution * resolution);
-                         const distSq = dx*dx + dy*dy + dz*dz;
-                         // Gaussian falloff
-                         field[idx] += strength * Math.exp(-distSq * 0.5);
-                     }
-                }
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dz = -2; dz <= 2; dz++) {
+            const ix = gx + dx;
+            const iy = gy + dy;
+            const iz = gz + dz;
+            if (ix >= 0 && ix < limit && iy >= 0 && iy < limit && iz >= 0 && iz < limit) {
+              const idx = ix + (iy * resolution) + (iz * resolution * resolution);
+              const distSq = dx * dx + dy * dy + dz * dz;
+              field[idx] += strength * Math.exp(-distSq * 0.5);
             }
+          }
         }
+      }
     }
 
-    // Optional blur to smooth edges further
-    if (mcMesh.blur) {
-       mcMesh.blur(2); 
-    }
-
-    mcMesh.isolation = params.mcIsolation; 
+    if (mcMesh.blur) mcMesh.blur(2);
+    mcMesh.isolation = preset.mcIsolation;
     mcMesh.update();
+
+    // Rebuild edges geometry from the updated marching cubes mesh
+    if (edgesRef.current) {
+      if (edgesGeoRef.current) edgesGeoRef.current.dispose();
+      const srcGeo = (mcMesh as any).geometry as BufferGeometry;
+      if (srcGeo && srcGeo.attributes.position && srcGeo.attributes.position.count > 0) {
+        edgesGeoRef.current = new EdgesGeometry(srcGeo, 30);
+        edgesRef.current.geometry = edgesGeoRef.current;
+      }
+    }
   };
 
-  // Trigger solid generation when switching view modes or when parameters change
-  // We debounce slightly or just run it. For 100k particles it might hitch.
   useEffect(() => {
     if (viewMode === 'solid') {
-        const timeout = setTimeout(() => updateSolidMesh(), 50);
-        return () => clearTimeout(timeout);
+      const timeout = setTimeout(() => updateSolidMesh(), 50);
+      return () => clearTimeout(timeout);
     }
-  }, [viewMode, params.mcIsolation, params.mcPointInfluence, params.mcResolution, isPlaying]);
+  }, [viewMode, preset.mcIsolation, preset.mcPointInfluence, preset.mcResolution, isPlaying]);
 
-
-  // Growth Loop
+  // Growth loop — dispatch to active strategy
   useFrame(() => {
     if (!isPlaying || !meshRef.current) return;
-    
-    if (countRef.current >= params.complexity) return;
 
-    // ... (DLA Logic) ...
-    const iterations = Math.floor(params.speed * 25); 
-    let addedCount = 0;
-    const maxParticles = params.complexity;
-    const noiseFactor = params.noise * 0.8; 
-    const growthStep = SIM_RADIUS * 2.0; 
+    const state = stateRef.current;
+    if (state.count >= state.maxParticles) return;
 
-    for (let i = 0; i < iterations; i++) {
-      if (countRef.current >= maxParticles) break;
+    const strategy = STRATEGIES[preset.strategy];
+    if (!strategy) return;
 
-      let parentIndex: number;
-      if (Math.random() < params.branching) {
-        // Bias towards newer particles (tips)
-        const window = Math.max(1, Math.floor(countRef.current * 0.15));
-        parentIndex = countRef.current - 1 - Math.floor(Math.random() * window);
-      } else {
-        parentIndex = Math.floor(Math.random() * countRef.current);
-      }
-      parentIndex = Math.max(0, parentIndex);
+    const iterations = Math.floor((preset.params.speed ?? 5) * 25);
+    const prevCount = state.count;
 
-      const px = positionsRef.current[parentIndex * 3];
-      const py = positionsRef.current[parentIndex * 3 + 1];
-      const pz = positionsRef.current[parentIndex * 3 + 2];
+    const result = strategy.grow(state, preset.params, iterations);
 
-      // --- DIRECTIONAL GROWTH LOGIC ---
-
-      // 1. Start with a random direction unit vector on sphere
-      let dirX = (Math.random() - 0.5) * 2;
-      let dirY = (Math.random() - 0.5) * 2;
-      let dirZ = (Math.random() - 0.5) * 2;
-
-      // 2. Apply Vertical Bias
-      // params.verticalBias (0-1). 
-      // 0 = random Y, 0.5 = moderate up, 1.0 = strong up
-      // We add to the Y component to bias it upwards.
-      dirY += params.verticalBias * 2.5; 
-
-      // 3. Apply Horizontal Bias
-      // params.horizontalBias (0-1).
-      // 0 = narrow, 1 = wide spread.
-      // We multiply X and Z to increase their influence relative to Y.
-      dirX *= (0.5 + params.horizontalBias * 2.0);
-      dirZ *= (0.5 + params.horizontalBias * 2.0);
-
-      // 4. Add Random Noise from params
-      dirX += (Math.random() - 0.5) * noiseFactor;
-      dirY += (Math.random() - 0.5) * noiseFactor;
-      dirZ += (Math.random() - 0.5) * noiseFactor;
-      
-      // 5. Normalize and Scale
-      tempVec.set(dirX, dirY, dirZ).normalize().multiplyScalar(growthStep);
-      
-      const cx = px + tempVec.x;
-      const cy = py + tempVec.y;
-      const cz = pz + tempVec.z;
-      
-      // STRICT GROUND CONSTRAINT
-      // If we try to go below floor, reject this attempt.
-      if (cy < 0) continue; 
-      
-      const hash = getHash(cx, cy, cz);
-      
-      if (!gridRef.current.has(hash)) {
-        const idx = countRef.current;
-        positionsRef.current[idx * 3] = cx;
-        positionsRef.current[idx * 3 + 1] = cy;
-        positionsRef.current[idx * 3 + 2] = cz;
-        
-        gridRef.current.add(hash);
-        
-        // Update Particle Mesh
-        dummy.position.set(cx, cy, cz);
+    // Update instanced mesh for newly added particles
+    if (result.addedPositions.length > 0) {
+      for (let i = 0; i < result.addedPositions.length; i++) {
+        const idx = prevCount + i;
+        const [x, y, z] = result.addedPositions[i];
+        dummy.position.set(x, y, z);
         dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        const scaleNoise = 0.8 + Math.random() * 0.4;
-        dummy.scale.setScalar(scaleNoise);
+        dummy.scale.setScalar(0.8 + Math.random() * 0.4);
         dummy.updateMatrix();
-        meshRef.current.setMatrixAt(idx, dummy.matrix);
-        
-        countRef.current++;
-        addedCount++;
+        meshRef.current!.setMatrixAt(idx, dummy.matrix);
       }
-    }
-
-    if (addedCount > 0) {
       meshRef.current.instanceMatrix.needsUpdate = true;
-      meshRef.current.count = countRef.current;
+      meshRef.current.count = state.count;
     }
   });
 
   return (
     <group>
-        {/* Particle View */}
-        <instancedMesh
-            visible={viewMode === 'particles'}
-            ref={meshRef}
-            args={[undefined, undefined, 100000]}
-            frustumCulled={false}
-            castShadow
-            receiveShadow
-        >
-            <sphereGeometry args={[VISUAL_RADIUS, 16, 16]} />
-            <CeramicMaterial color={params.color} useTexture={params.useTexture} />
-        </instancedMesh>
+      <instancedMesh
+        visible={viewMode === 'particles'}
+        ref={meshRef}
+        args={[undefined, undefined, MAX_PARTICLES]}
+        frustumCulled={false}
+        castShadow
+        receiveShadow
+      >
+        <sphereGeometry args={[VISUAL_RADIUS, 16, 16]} />
+        <CeramicMaterial color={preset.color} useTexture={preset.useTexture} />
+      </instancedMesh>
 
-        {/* Solid View (Marching Cubes) */}
-        {/* We reuse the stable mcMesh object */}
-        <primitive 
-            visible={viewMode === 'solid'}
-            object={mcMesh} 
-            scale={[MC_SIZE/2, MC_SIZE/2, MC_SIZE/2]} // Scale MC box to match world coordinates
-            castShadow
-            receiveShadow
-        >
-           <CeramicMaterial attach="material" color={params.color} useTexture={params.useTexture} />
-        </primitive>
+      <primitive
+        visible={viewMode === 'solid'}
+        object={mcMesh}
+        scale={[MC_SIZE / 2, MC_SIZE / 2, MC_SIZE / 2]}
+        castShadow
+        receiveShadow
+      >
+        <meshStandardMaterial
+          attach="material"
+          color={preset.color}
+          roughness={0.6}
+          metalness={0.0}
+          flatShading={true}
+        />
+      </primitive>
+
+      {/* Edge overlay on solid mesh */}
+      <lineSegments
+        ref={edgesRef}
+        visible={viewMode === 'solid' && showWireframe}
+        scale={[MC_SIZE / 2, MC_SIZE / 2, MC_SIZE / 2]}
+        material={edgeMaterial}
+      >
+        <bufferGeometry />
+      </lineSegments>
     </group>
   );
 };

@@ -5,7 +5,7 @@ import { EffectComposer, SSAO, Bloom, Vignette } from '@react-three/postprocessi
 import { Coral } from './Coral';
 import { useStore } from '../store';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import { Vector3, PerspectiveCamera } from 'three';
+import { Vector3, PerspectiveCamera, Color } from 'three';
 
 export const Experience: React.FC = () => {
   const controlsRef = useRef<OrbitControlsImpl>(null);
@@ -62,10 +62,10 @@ export const Experience: React.FC = () => {
 
           <EffectComposer multisampling={2} enableNormalPass>
             <SSAO
-              radius={0.08}
-              intensity={200}
-              luminanceInfluence={0.3}
-              color="#000000"
+              radius={0.12}
+              intensity={30}
+              luminanceInfluence={0.5}
+              color={new Color(0x000000)}
             />
             <Bloom
               intensity={0.5}

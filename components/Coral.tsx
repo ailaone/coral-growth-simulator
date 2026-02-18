@@ -41,8 +41,8 @@ export const Coral: React.FC = () => {
   }, [resetTrigger]);
 
   // Compute bounding box and grid sizing from branches
-  const { center, mcSize } = useMemo(() => {
-    if (branches.length === 0) return { center: new Vector3(), mcSize: 30 };
+  const bounds = useMemo(() => {
+    if (branches.length === 0) return { center: new Vector3(), mcSize: 30, floorY: 0 };
 
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -66,13 +66,17 @@ export const Coral: React.FC = () => {
     const cz = (minZ + maxZ) / 2;
     const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ) + pad * 2;
 
-    // Set floor at the bottom of branches (adjusted for capsule radius)
-    setFloorY(minY - maxRadius);
-    // Store world-space focus target (coral group is offset by [0, -15, 0])
-    setFocusTarget([cx, cy - 15, cz], size / 2);
-
-    return { center: new Vector3(cx, cy, cz), mcSize: size };
+    return { center: new Vector3(cx, cy, cz), mcSize: size, floorY: minY - maxRadius };
   }, [branches]);
+
+  const { center, mcSize } = bounds;
+
+  // Push focus target to store in an effect (not during render)
+  useEffect(() => {
+    if (branches.length === 0) return;
+    setFloorY(bounds.floorY);
+    setFocusTarget([bounds.center.x, bounds.center.y - 15, bounds.center.z], bounds.mcSize / 2);
+  }, [bounds]);
 
   // ─── Line2 rendering: depth-tapered width + opacity fade ──────────────
   const lineObjects = useMemo(() => {
@@ -134,6 +138,13 @@ export const Coral: React.FC = () => {
       }
     };
   }, [lineObjects]);
+
+  // Dispose old solid geometry when it changes
+  useEffect(() => {
+    return () => {
+      if (solidGeo) solidGeo.dispose();
+    };
+  }, [solidGeo]);
 
   // ─── Stage 2: Build welded mesh (triggered by Make 3D) ────────────────
   useEffect(() => {

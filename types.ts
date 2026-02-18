@@ -37,7 +37,7 @@ export const DEFAULT_CONFIG: CoralConfig = {
   ],
   mcResolution: 200,
   mcThickness: 75,
-  blobiness: 0.5,
+  blobiness: 0,
   color: '#ffebc9',
   edgeColor: '#000000',
   edgeThickness: 0.5,

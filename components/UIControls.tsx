@@ -1,32 +1,65 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Mesh, Matrix4 } from 'three';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { useStore } from '../store';
-import { PRESETS, CoralType } from '../types';
 
 export const UIControls: React.FC = () => {
   const {
-    isPlaying,
-    togglePlay,
     resetSimulation,
-    preset,
+    triggerMesh,
+    config,
     setParam,
-    setPreset,
     setRenderParam,
-    viewMode,
-    setViewMode,
+    meshTrigger,
+    meshGeometry,
+    meshScale,
     showWireframe,
-    toggleWireframe
+    showMesh,
+    toggleWireframe,
+    toggleShowMesh,
   } = useStore();
 
   const [isPanelOpen, setIsPanelOpen] = useState(true);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
-  const handleExport = () => {
-    const canvas = document.querySelector('canvas');
-    if (canvas) {
-      const link = document.createElement('a');
-      link.download = `coral-growth-${Date.now()}.png`;
-      link.href = canvas.toDataURL('image/png').replace('image/png', 'image/octet-stream');
-      link.click();
+  const hasMesh = meshTrigger > 0;
+
+  // Close export menu on outside click
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handleClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showExportMenu]);
+
+  const handleExportSTL = (zUp: boolean) => {
+    if (!meshGeometry) return;
+    setShowExportMenu(false);
+
+    const geo = meshGeometry.clone();
+
+    if (zUp) {
+      // Rotate +90° around X: Y-up → Z-up (Rhino, most CAD)
+      geo.applyMatrix4(new Matrix4().makeRotationX(Math.PI / 2));
     }
+
+    const tempMesh = new Mesh(geo);
+    const exporter = new STLExporter();
+    const buffer = exporter.parse(tempMesh, { binary: true }) as DataView;
+
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    const axis = zUp ? 'zup' : 'yup';
+    link.download = `coral-seed${Math.round(config.params.seed)}-gen${Math.round(config.params.generations)}-${axis}.stl`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+    geo.dispose();
   };
 
   return (
@@ -36,12 +69,7 @@ export const UIControls: React.FC = () => {
       <header className="flex justify-between items-start pointer-events-auto">
         <div>
           <h1 className="text-2xl font-light tracking-wide uppercase mb-1">Coral</h1>
-          <p className="text-xs font-mono opacity-60">GENERATIVE SIMULATION /// DLA-01</p>
-        </div>
-        <div className="flex space-x-2">
-          <div className="w-3 h-3 rounded-full border border-[#1A1A1A] opacity-50"></div>
-          <div className="w-3 h-3 bg-[#1A1A1A] opacity-80"></div>
-          <div className="w-3 h-3 border border-[#1A1A1A] opacity-50"></div>
+          <p className="text-xs font-mono opacity-60">GENERATIVE SIMULATION /// L-SYSTEM</p>
         </div>
       </header>
 
@@ -59,51 +87,14 @@ export const UIControls: React.FC = () => {
           </div>
 
           <div className="space-y-8">
-            {/* View Mode Toggle */}
-            <div className="space-y-2">
-              <label className="text-xs font-bold uppercase opacity-50">View Mode</label>
-              <div className="flex border border-[#C9C5BA] rounded-sm overflow-hidden">
-                <button
-                  onClick={() => setViewMode('particles')}
-                  className={`flex-1 py-2 text-xs uppercase transition-colors ${viewMode === 'particles' ? 'bg-[#1A1A1A] text-[#F5F5F0]' : 'hover:bg-gray-200'}`}
-                >
-                  Particles
-                </button>
-                <div className="w-px bg-[#C9C5BA]"></div>
-                <button
-                  onClick={() => setViewMode('solid')}
-                  className={`flex-1 py-2 text-xs uppercase transition-colors ${viewMode === 'solid' ? 'bg-[#1A1A1A] text-[#F5F5F0]' : 'hover:bg-gray-200'}`}
-                >
-                  Solid
-                </button>
-              </div>
-            </div>
-
-            {/* Presets */}
-            <div className="space-y-2">
-              <label className="text-xs font-bold uppercase opacity-50">Coral Type</label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.keys(PRESETS) as CoralType[]).map(key => (
-                  <button
-                    key={key}
-                    onClick={() => { setPreset(key); resetSimulation(); }}
-                    className="px-3 py-2 text-xs border border-[#C9C5BA] hover:bg-[#1A1A1A] hover:text-[#F5F5F0] transition-colors text-left uppercase"
-                  >
-                    {PRESETS[key].name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <hr className="border-[#C9C5BA] opacity-50" />
-
-            {/* Growth Parameters — dynamic per preset */}
+            {/* Growth Parameters */}
             <div className="space-y-6">
-              {preset.sliders.map(slider => (
+              <h3 className="text-xs font-bold uppercase opacity-50 mb-4">Growth</h3>
+              {config.sliders.map(slider => (
                 <ControlSlider
                   key={slider.key}
                   label={slider.label}
-                  value={preset.params[slider.key] ?? 0}
+                  value={config.params[slider.key] ?? 0}
                   min={slider.min}
                   max={slider.max}
                   step={slider.step}
@@ -113,60 +104,67 @@ export const UIControls: React.FC = () => {
               ))}
             </div>
 
-            <hr className="border-[#C9C5BA] opacity-50" />
+            {/* Solid Mesh Settings — only visible after Make 3D */}
+            {hasMesh && (
+              <>
+                <hr className="border-[#C9C5BA] opacity-50" />
+                <div className="space-y-6">
+                  <h3 className="text-xs font-bold uppercase opacity-50 mb-4">Solid Mesh</h3>
 
-            {/* Solid Mesh Settings */}
-            <div className="space-y-6">
-              <h3 className="text-xs font-bold uppercase opacity-50 mb-4">Solid Mesh</h3>
+                  <div className="flex items-center justify-between mb-6">
+                    <span className="text-xs uppercase font-medium">Show Mesh</span>
+                    <button
+                      onClick={toggleShowMesh}
+                      className={`w-10 h-5 rounded-full relative transition-colors ${showMesh ? 'bg-[#1A1A1A]' : 'bg-[#C9C5BA]'}`}
+                    >
+                      <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-transform ${showMesh ? 'left-6' : 'left-1'}`}></div>
+                    </button>
+                  </div>
 
-              {/* Material Color & Texture */}
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex flex-col">
-                  <span className="text-xs uppercase font-medium">Color</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="color"
-                    value={preset.color}
-                    onChange={(e) => setRenderParam({ color: e.target.value })}
-                    className="w-8 h-8 rounded-full border border-[#C9C5BA] cursor-pointer overflow-hidden p-0"
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-xs uppercase font-medium">Color</span>
+                    <input
+                      type="color"
+                      value={config.color}
+                      onChange={(e) => setRenderParam({ color: e.target.value })}
+                      className="w-8 h-8 rounded-full border border-[#C9C5BA] cursor-pointer overflow-hidden p-0"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between mb-6">
+                    <span className="text-xs uppercase font-medium">Edges</span>
+                    <button
+                      onClick={toggleWireframe}
+                      className={`w-10 h-5 rounded-full relative transition-colors ${showWireframe ? 'bg-[#1A1A1A]' : 'bg-[#C9C5BA]'}`}
+                    >
+                      <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-transform ${showWireframe ? 'left-6' : 'left-1'}`}></div>
+                    </button>
+                  </div>
+
+                  <ControlSlider
+                    label="Resolution"
+                    value={config.mcResolution}
+                    min={32} max={180} step={1}
+                    onChange={(v) => setRenderParam({ mcResolution: v })}
+                    desc="Grid size (rebuild with Make 3D)"
+                  />
+                  <ControlSlider
+                    label="Isolation"
+                    value={config.mcIsolation}
+                    min={5} max={200} step={1}
+                    onChange={(v) => setRenderParam({ mcIsolation: v })}
+                    desc="Surface threshold (Low: Thick, High: Thin)"
+                  />
+                  <ControlSlider
+                    label="Influence"
+                    value={config.mcPointInfluence}
+                    min={20} max={300} step={5}
+                    onChange={(v) => setRenderParam({ mcPointInfluence: v })}
+                    desc="Branch field strength"
                   />
                 </div>
-              </div>
-
-              <div className="flex items-center justify-between mb-6">
-                <span className="text-xs uppercase font-medium">Edges</span>
-                <button
-                  onClick={toggleWireframe}
-                  className={`w-10 h-5 rounded-full relative transition-colors ${showWireframe ? 'bg-[#1A1A1A]' : 'bg-[#C9C5BA]'}`}
-                >
-                  <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-transform ${showWireframe ? 'left-6' : 'left-1'}`}></div>
-                </button>
-              </div>
-
-              <ControlSlider
-                label="Resolution"
-                value={preset.mcResolution}
-                min={32} max={180} step={1}
-                onChange={(v) => setRenderParam({ mcResolution: v })}
-                desc="Grid size (Low: Fast, High: Sharp)"
-              />
-              <ControlSlider
-                label="Isolation"
-                value={preset.mcIsolation}
-                min={10} max={200} step={1}
-                onChange={(v) => setRenderParam({ mcIsolation: v })}
-                desc="Thickness (Low: Thick, High: Thin)"
-              />
-              <ControlSlider
-                label="Influence"
-                value={preset.mcPointInfluence}
-                min={1} max={50} step={1}
-                onChange={(v) => setRenderParam({ mcPointInfluence: v })}
-                desc="Blob size per particle"
-              />
-            </div>
-
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -195,17 +193,40 @@ export const UIControls: React.FC = () => {
             Run
           </button>
           <button
-            onClick={togglePlay}
+            onClick={triggerMesh}
             className="px-8 py-3 border border-[#1A1A1A] hover:bg-[#1A1A1A] hover:text-[#F5F5F0] transition-colors text-xs font-bold uppercase tracking-widest"
           >
-            {isPlaying ? 'Pause' : 'Resume'}
+            Make 3D
           </button>
-          <button
-            onClick={handleExport}
-            className="px-8 py-3 bg-[#1A1A1A] text-[#F5F5F0] hover:bg-[#8B7E74] transition-colors text-xs font-bold uppercase tracking-widest"
-          >
-            Export 3D
-          </button>
+          <div className="relative" ref={exportMenuRef}>
+            <button
+              onClick={() => meshGeometry && setShowExportMenu(!showExportMenu)}
+              disabled={!meshGeometry}
+              className={`px-8 py-3 text-xs font-bold uppercase tracking-widest transition-colors ${
+                meshGeometry
+                  ? 'bg-[#1A1A1A] text-[#F5F5F0] hover:bg-[#8B7E74]'
+                  : 'bg-[#C9C5BA] text-[#F5F5F0]/50 cursor-not-allowed'
+              }`}
+            >
+              Export STL
+            </button>
+            {showExportMenu && (
+              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-[#F5F5F0] border border-[#C9C5BA] shadow-lg min-w-[160px]">
+                <button
+                  onClick={() => handleExportSTL(false)}
+                  className="w-full px-4 py-3 text-xs font-bold uppercase tracking-wider hover:bg-[#1A1A1A] hover:text-[#F5F5F0] transition-colors text-left"
+                >
+                  Y-Up <span className="font-normal normal-case opacity-50">(Three.js)</span>
+                </button>
+                <button
+                  onClick={() => handleExportSTL(true)}
+                  className="w-full px-4 py-3 text-xs font-bold uppercase tracking-wider hover:bg-[#1A1A1A] hover:text-[#F5F5F0] transition-colors text-left border-t border-[#C9C5BA]"
+                >
+                  Z-Up <span className="font-normal normal-case opacity-50">(Rhino, CAD)</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </footer>
     </div>

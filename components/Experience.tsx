@@ -1,13 +1,10 @@
 import React, { Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Stage, Environment, ContactShadows } from '@react-three/drei';
+import { OrbitControls, ContactShadows } from '@react-three/drei';
 import { EffectComposer, SSAO, Bloom, Vignette } from '@react-three/postprocessing';
 import { Coral } from './Coral';
-import { useStore } from '../store';
 
 export const Experience: React.FC = () => {
-  const { isPlaying } = useStore();
-
   return (
     <div className="absolute inset-0 z-0">
       <Canvas

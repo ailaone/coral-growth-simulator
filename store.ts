@@ -1,68 +1,71 @@
 import { create } from 'zustand';
-import { PRESETS, CoralType } from './types';
-import { CoralPreset } from './simulation/types';
-
-export type ViewMode = 'particles' | 'solid';
+import { BufferGeometry } from 'three';
+import { DEFAULT_CONFIG, CoralConfig } from './types';
 
 interface AppState {
-  isPlaying: boolean;
-  activePresetKey: CoralType;
-  preset: CoralPreset;
+  config: CoralConfig;
   resetTrigger: number;
-  viewMode: ViewMode;
+  meshTrigger: number;
   showWireframe: boolean;
+  showMesh: boolean;
+  meshGeometry: BufferGeometry | null;
+  meshScale: number;
 
   // Actions
-  setIsPlaying: (isPlaying: boolean) => void;
   setParam: (key: string, value: number) => void;
-  setPreset: (presetKey: CoralType) => void;
-  setRenderParam: (params: Partial<Pick<CoralPreset, 'mcResolution' | 'mcIsolation' | 'mcPointInfluence' | 'color' | 'useTexture'>>) => void;
+  setRenderParam: (params: Partial<Pick<CoralConfig, 'mcResolution' | 'mcIsolation' | 'mcPointInfluence' | 'color' | 'useTexture'>>) => void;
   resetSimulation: () => void;
-  togglePlay: () => void;
-  setViewMode: (mode: ViewMode) => void;
+  triggerMesh: () => void;
   toggleWireframe: () => void;
+  toggleShowMesh: () => void;
+  setMeshGeometry: (geo: BufferGeometry | null, scale?: number) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
-  isPlaying: false,
-  activePresetKey: 'staghorn',
-  preset: { ...PRESETS.staghorn, params: { ...PRESETS.staghorn.params } },
+  config: { ...DEFAULT_CONFIG, params: { ...DEFAULT_CONFIG.params } },
   resetTrigger: 0,
-  viewMode: 'particles',
+  meshTrigger: 0,
   showWireframe: false,
-
-  setIsPlaying: (isPlaying) => set({ isPlaying }),
+  showMesh: true,
+  meshGeometry: null,
+  meshScale: 1,
 
   setParam: (key, value) => set((state) => ({
-    preset: {
-      ...state.preset,
-      params: { ...state.preset.params, [key]: value }
+    config: {
+      ...state.config,
+      params: { ...state.config.params, [key]: value }
     }
   })),
-
-  setPreset: (presetKey) => {
-    const preset = PRESETS[presetKey];
-    if (preset) {
-      set({
-        activePresetKey: presetKey,
-        preset: { ...preset, params: { ...preset.params } },
-      });
-    }
-  },
 
   setRenderParam: (params) => set((state) => ({
-    preset: { ...state.preset, ...params }
+    config: { ...state.config, ...params }
   })),
 
+  // Run: new tree, clear any existing mesh
   resetSimulation: () => set((state) => ({
     resetTrigger: state.resetTrigger + 1,
-    isPlaying: true,
-    viewMode: 'particles',
+    meshTrigger: 0,
+    meshGeometry: null,
+    meshScale: 1,
+    config: {
+      ...state.config,
+      params: {
+        ...state.config.params,
+        seed: Math.floor(Math.random() * 999) + 1,
+      }
+    }
   })),
 
-  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
-
-  setViewMode: (mode) => set({ viewMode: mode }),
+  // Make 3D: trigger mesh build from current branches
+  triggerMesh: () => set((state) => ({
+    meshTrigger: state.meshTrigger + 1,
+  })),
 
   toggleWireframe: () => set((state) => ({ showWireframe: !state.showWireframe })),
+  toggleShowMesh: () => set((state) => ({ showMesh: !state.showMesh })),
+
+  setMeshGeometry: (geo, scale) => set({
+    meshGeometry: geo,
+    ...(scale !== undefined ? { meshScale: scale } : {}),
+  }),
 }));

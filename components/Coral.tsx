@@ -1,236 +1,207 @@
-import React, { useRef, useEffect, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
-import { InstancedMesh, Object3D, MeshBasicMaterial, MeshStandardMaterial, EdgesGeometry, LineSegments, LineBasicMaterial, BufferGeometry } from 'three';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import {
+  BufferGeometry,
+  Float32BufferAttribute,
+  LineBasicMaterial,
+  MeshBasicMaterial,
+  EdgesGeometry,
+  LineSegments as ThreeLineSegments,
+  Vector3,
+} from 'three';
 import { MarchingCubes } from 'three-stdlib';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useStore } from '../store';
 import { CeramicMaterial } from './CeramicMaterial';
-import { GrowthState } from '../simulation/common';
-import { GrowthStrategy } from '../simulation/types';
-import { MC_SIZE, VISUAL_RADIUS, getHash } from '../simulation/common';
-import { staghornStrategy } from '../simulation/staghorn';
-import { brainStrategy } from '../simulation/brain';
-import { foxStrategy } from '../simulation/fox';
-
-const dummy = new Object3D();
-
-const STRATEGIES: Record<string, GrowthStrategy> = {
-  staghorn: staghornStrategy,
-  brain: brainStrategy,
-  fox: foxStrategy,
-};
-
-const MAX_PARTICLES = 100000;
+import { generateTree, fillDistanceField, displaceVertices, Branch } from '../simulation/lsystem';
 
 export const Coral: React.FC = () => {
-  const meshRef = useRef<InstancedMesh>(null);
-  const edgesRef = useRef<LineSegments>(null);
+  const {
+    config,
+    resetTrigger,
+    meshTrigger,
+    showWireframe,
+    showMesh,
+    setMeshGeometry,
+  } = useStore();
+
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [solidGeo, setSolidGeo] = useState<BufferGeometry | null>(null);
+  const edgesRef = useRef<ThreeLineSegments>(null);
   const edgesGeoRef = useRef<EdgesGeometry | null>(null);
-  const { isPlaying, preset, resetTrigger, viewMode, showWireframe } = useStore();
 
-  const edgeMaterial = useMemo(() => new LineBasicMaterial({ color: 0x000000, opacity: 0.3, transparent: true }), []);
+  const edgeMaterial = useMemo(
+    () => new LineBasicMaterial({ color: 0x000000, opacity: 0.3, transparent: true }),
+    []
+  );
 
-  // Simulation state refs
-  const stateRef = useRef<GrowthState>({
-    positions: new Float32Array(MAX_PARTICLES * 3),
-    count: 0,
-    grid: new Set(),
-    maxParticles: MAX_PARTICLES,
-  });
-
-  // Marching Cubes
-  const mcMesh = useMemo(() => {
-    return new MarchingCubes(preset.mcResolution, new MeshBasicMaterial({ color: 0x000000 }), true, true, 800000);
-  }, [preset.mcResolution]);
-
+  // ─── Stage 1: Generate tree on Run ─────────────────────────────────────
   useEffect(() => {
-    return () => {
-      // @ts-ignore
-      if (mcMesh.geometry) mcMesh.geometry.dispose();
-      if (edgesGeoRef.current) edgesGeoRef.current.dispose();
-    };
-  }, [mcMesh]);
-
-  // Initialize simulation
-  const initSimulation = () => {
-    if (!meshRef.current) return;
-
-    const state = stateRef.current;
-    state.count = 0;
-    state.grid.clear();
-    state.positions.fill(0);
-    state.maxParticles = preset.params.maxParticles ?? 30000;
-
-    const strategy = STRATEGIES[preset.strategy];
-    if (!strategy) return;
-
-    // Place seed particles from strategy
-    const seeds = strategy.init(preset.params);
-    for (const [x, y, z] of seeds) {
-      const idx = state.count;
-      state.positions[idx * 3] = x;
-      state.positions[idx * 3 + 1] = y;
-      state.positions[idx * 3 + 2] = z;
-      state.grid.add(getHash(x, y, z));
-      state.count++;
-
-      dummy.position.set(x, y, z);
-      dummy.scale.setScalar(1);
-      dummy.rotation.set(0, 0, 0);
-      dummy.updateMatrix();
-      meshRef.current.setMatrixAt(idx, dummy.matrix);
-    }
-
-    // Clear remaining instances
-    dummy.scale.setScalar(0);
-    dummy.updateMatrix();
-    for (let i = state.count; i < MAX_PARTICLES; i++) {
-      meshRef.current.setMatrixAt(i, dummy.matrix);
-    }
-
-    meshRef.current.instanceMatrix.needsUpdate = true;
-    meshRef.current.count = MAX_PARTICLES;
-
-    if (mcMesh) mcMesh.reset();
-  };
-
-  useEffect(() => {
-    initSimulation();
+    setBranches(generateTree(config.params));
+    setSolidGeo(null);
   }, [resetTrigger]);
 
-  // Solid mesh generation (unchanged logic)
-  const updateSolidMesh = () => {
-    if (!mcMesh || stateRef.current.count < 2) return;
+  // Compute bounding box and grid sizing from branches
+  const { center, mcSize } = useMemo(() => {
+    if (branches.length === 0) return { center: new Vector3(), mcSize: 30 };
 
-    mcMesh.reset();
-    const field = (mcMesh as any).field as Float32Array;
-    const strength = preset.mcPointInfluence;
-    const resolution = preset.mcResolution;
-    const halfSize = MC_SIZE / 2;
-    const factor = resolution / MC_SIZE;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let maxRadius = 0;
 
-    field.fill(0);
-
-    const count = stateRef.current.count;
-    const pos = stateRef.current.positions;
-    const limit = resolution - 1;
-
-    for (let i = 0; i < count; i++) {
-      const x = pos[i * 3];
-      const y = pos[i * 3 + 1];
-      const z = pos[i * 3 + 2];
-
-      const gx = Math.floor((x + halfSize) * factor);
-      const gy = Math.floor((y + halfSize) * factor);
-      const gz = Math.floor((z + halfSize) * factor);
-
-      for (let dx = -2; dx <= 2; dx++) {
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dz = -2; dz <= 2; dz++) {
-            const ix = gx + dx;
-            const iy = gy + dy;
-            const iz = gz + dz;
-            if (ix >= 0 && ix < limit && iy >= 0 && iy < limit && iz >= 0 && iz < limit) {
-              const idx = ix + (iy * resolution) + (iz * resolution * resolution);
-              const distSq = dx * dx + dy * dy + dz * dz;
-              field[idx] += strength * Math.exp(-distSq * 0.5);
-            }
-          }
-        }
+    for (const b of branches) {
+      for (const p of [b.start, b.end]) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+        if (p.z < minZ) minZ = p.z;
+        if (p.z > maxZ) maxZ = p.z;
       }
+      if (b.radius > maxRadius) maxRadius = b.radius;
     }
 
-    if (mcMesh.blur) mcMesh.blur(2);
-    mcMesh.isolation = preset.mcIsolation;
-    mcMesh.update();
+    const pad = maxRadius * 3;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const cz = (minZ + maxZ) / 2;
+    const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ) + pad * 2;
 
-    // Rebuild edges geometry from the updated marching cubes mesh
+    return { center: new Vector3(cx, cy, cz), mcSize: size };
+  }, [branches]);
+
+  // Line geometry from branches
+  const lineGeometry = useMemo(() => {
+    const geo = new BufferGeometry();
+    if (branches.length === 0) return geo;
+
+    const positions = new Float32Array(branches.length * 6);
+    for (let i = 0; i < branches.length; i++) {
+      const b = branches[i];
+      const off = i * 6;
+      positions[off] = b.start.x;
+      positions[off + 1] = b.start.y;
+      positions[off + 2] = b.start.z;
+      positions[off + 3] = b.end.x;
+      positions[off + 4] = b.end.y;
+      positions[off + 5] = b.end.z;
+    }
+
+    geo.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    return geo;
+  }, [branches]);
+
+  const lineMaterial = useMemo(
+    () => new LineBasicMaterial({ color: config.color }),
+    [config.color]
+  );
+
+  // ─── Stage 2: Build welded mesh (triggered by Make 3D) ────────────────
+  useEffect(() => {
+    if (meshTrigger === 0 || branches.length === 0) {
+      setSolidGeo(null);
+      setMeshGeometry(null);
+      return;
+    }
+
+    // Shift branches so tree center is at grid origin
+    const shiftedBranches: Branch[] = branches.map(b => ({
+      ...b,
+      start: b.start.clone().sub(center),
+      end: b.end.clone().sub(center),
+    }));
+
+    // Create MC as a computation tool only (not rendered directly)
+    const mc = new MarchingCubes(config.mcResolution, new MeshBasicMaterial(), true, true, 800000);
+    mc.reset();
+    const field = (mc as any).field as Float32Array;
+
+    fillDistanceField(shiftedBranches, field, config.mcResolution, mcSize, config.mcPointInfluence);
+
+    if (mc.blur) mc.blur(1);
+    mc.isolation = config.mcIsolation;
+    mc.update();
+
+    const rawGeo = (mc as any).geometry as BufferGeometry;
+    if (!rawGeo || !rawGeo.attributes.position || rawGeo.attributes.position.count === 0) {
+      setSolidGeo(null);
+      setMeshGeometry(null);
+      if ((mc as any).geometry) (mc as any).geometry.dispose();
+      return;
+    }
+
+    // 1. Clone the raw MC output (triangle soup)
+    const cloned = rawGeo.clone();
+
+    // 2. Weld vertices FIRST (while positions are still coincident)
+    const welded = mergeVertices(cloned, 0.0001);
+    welded.computeVertexNormals();
+
+    // 3. Displace AFTER welding (shared vertices now have averaged normals)
+    const positions = welded.attributes.position.array as Float32Array;
+    const normals = welded.attributes.normal.array as Float32Array;
+    displaceVertices(positions, normals, config.params.noiseAmount, config.params.noiseScale, mcSize);
+    welded.attributes.position.needsUpdate = true;
+    welded.computeVertexNormals();
+
+    // Scale from MC normalized [-1,1] space to world size
+    const halfMC = mcSize / 2;
+    for (let i = 0; i < positions.length; i++) {
+      positions[i] *= halfMC;
+    }
+    welded.attributes.position.needsUpdate = true;
+    welded.computeBoundingSphere();
+    welded.computeBoundingBox();
+
+    setSolidGeo(welded);
+    setMeshGeometry(welded, 1); // already in world scale, no extra scaling needed
+
+    // Rebuild edges from welded geometry
     if (edgesRef.current) {
       if (edgesGeoRef.current) edgesGeoRef.current.dispose();
-      const srcGeo = (mcMesh as any).geometry as BufferGeometry;
-      if (srcGeo && srcGeo.attributes.position && srcGeo.attributes.position.count > 0) {
-        edgesGeoRef.current = new EdgesGeometry(srcGeo, 30);
-        edgesRef.current.geometry = edgesGeoRef.current;
-      }
+      edgesGeoRef.current = new EdgesGeometry(welded, 30);
+      edgesRef.current.geometry = edgesGeoRef.current;
     }
-  };
 
+    // Dispose temporary objects
+    if ((mc as any).geometry) (mc as any).geometry.dispose();
+    cloned.dispose();
+  }, [meshTrigger, config.mcResolution, config.mcIsolation, config.mcPointInfluence, config.params.noiseAmount, config.params.noiseScale]);
+
+  // Cleanup
   useEffect(() => {
-    if (viewMode === 'solid') {
-      const timeout = setTimeout(() => updateSolidMesh(), 50);
-      return () => clearTimeout(timeout);
-    }
-  }, [viewMode, preset.mcIsolation, preset.mcPointInfluence, preset.mcResolution, isPlaying]);
+    return () => {
+      if (edgesGeoRef.current) edgesGeoRef.current.dispose();
+    };
+  }, []);
 
-  // Growth loop — dispatch to active strategy
-  useFrame(() => {
-    if (!isPlaying || !meshRef.current) return;
-
-    const state = stateRef.current;
-    if (state.count >= state.maxParticles) return;
-
-    const strategy = STRATEGIES[preset.strategy];
-    if (!strategy) return;
-
-    const iterations = Math.floor((preset.params.speed ?? 5) * 25);
-    const prevCount = state.count;
-
-    const result = strategy.grow(state, preset.params, iterations);
-
-    // Update instanced mesh for newly added particles
-    if (result.addedPositions.length > 0) {
-      for (let i = 0; i < result.addedPositions.length; i++) {
-        const idx = prevCount + i;
-        const [x, y, z] = result.addedPositions[i];
-        dummy.position.set(x, y, z);
-        dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        dummy.scale.setScalar(0.8 + Math.random() * 0.4);
-        dummy.updateMatrix();
-        meshRef.current!.setMatrixAt(idx, dummy.matrix);
-      }
-      meshRef.current.instanceMatrix.needsUpdate = true;
-      meshRef.current.count = state.count;
-    }
-  });
+  const hasMesh = meshTrigger > 0 && solidGeo !== null;
 
   return (
     <group>
-      <instancedMesh
-        visible={viewMode === 'particles'}
-        ref={meshRef}
-        args={[undefined, undefined, MAX_PARTICLES]}
-        frustumCulled={false}
-        castShadow
-        receiveShadow
-      >
-        <sphereGeometry args={[VISUAL_RADIUS, 16, 16]} />
-        <CeramicMaterial color={preset.color} useTexture={preset.useTexture} />
-      </instancedMesh>
+      {/* Lines: visible when no mesh, or when mesh is toggled off */}
+      {(!hasMesh || !showMesh) && (
+        <lineSegments geometry={lineGeometry} material={lineMaterial} />
+      )}
 
-      <primitive
-        visible={viewMode === 'solid'}
-        object={mcMesh}
-        scale={[MC_SIZE / 2, MC_SIZE / 2, MC_SIZE / 2]}
-        castShadow
-        receiveShadow
-      >
-        <meshStandardMaterial
-          attach="material"
-          color={preset.color}
-          roughness={0.6}
-          metalness={0.0}
-          flatShading={true}
-        />
-      </primitive>
+      {/* Solid mesh: rendered as a regular mesh with welded geometry */}
+      {hasMesh && showMesh && solidGeo && (
+        <group position={[center.x, center.y, center.z]}>
+          <mesh geometry={solidGeo} castShadow receiveShadow>
+            <CeramicMaterial
+              color={config.color}
+              useTexture={config.useTexture}
+            />
+          </mesh>
 
-      {/* Edge overlay on solid mesh */}
-      <lineSegments
-        ref={edgesRef}
-        visible={viewMode === 'solid' && showWireframe}
-        scale={[MC_SIZE / 2, MC_SIZE / 2, MC_SIZE / 2]}
-        material={edgeMaterial}
-      >
-        <bufferGeometry />
-      </lineSegments>
+          <lineSegments
+            ref={edgesRef}
+            visible={showWireframe}
+            material={edgeMaterial}
+          >
+            <bufferGeometry />
+          </lineSegments>
+        </group>
+      )}
     </group>
   );
 };

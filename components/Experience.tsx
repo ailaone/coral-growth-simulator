@@ -1,4 +1,4 @@
-import React, { Suspense, useRef, useCallback } from 'react';
+import React, { Suspense, useRef, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { EffectComposer, SSAO, Bloom, Vignette } from '@react-three/postprocessing';
@@ -9,16 +9,18 @@ import { Vector3, PerspectiveCamera } from 'three';
 
 export const Experience: React.FC = () => {
   const controlsRef = useRef<OrbitControlsImpl>(null);
+  const zoomTrigger = useStore((s) => s.zoomTrigger);
+  const focusCenter = useStore((s) => s.focusCenter);
+  const focusRadius = useStore((s) => s.focusRadius);
 
-  const handleZoomExtents = useCallback(() => {
+  // Zoom to fit: on manual trigger (button) or when tree regenerates (focusCenter changes)
+  useEffect(() => {
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const { focusCenter, focusRadius } = useStore.getState();
     const target = new Vector3(...focusCenter);
     const camera = controls.object as PerspectiveCamera;
 
-    // Keep current viewing direction, adjust distance to frame the coral
     const direction = new Vector3()
       .subVectors(camera.position, controls.target)
       .normalize();
@@ -28,24 +30,10 @@ export const Experience: React.FC = () => {
     controls.target.copy(target);
     camera.position.copy(target).add(direction.multiplyScalar(distance));
     controls.update();
-  }, []);
+  }, [zoomTrigger, focusCenter, focusRadius]);
 
   return (
-    <div className="absolute inset-0 z-0">
-      {/* Zoom Extents button */}
-      <button
-        onClick={handleZoomExtents}
-        title="Zoom on Coral"
-        className="absolute top-6 right-[340px] z-20 pointer-events-auto w-9 h-9 flex items-center justify-center border border-[#C9C5BA] bg-[#F5F5F0]/80 backdrop-blur-sm hover:bg-[#1A1A1A] hover:text-[#F5F5F0] hover:border-[#1A1A1A] transition-colors text-[#1A1A1A]"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M2 6V2h4" />
-          <path d="M14 6V2h-4" />
-          <path d="M2 10v4h4" />
-          <path d="M14 10v4h-4" />
-        </svg>
-      </button>
-
+    <div className="absolute inset-0 right-80 z-0">
       <Canvas
         dpr={[1, 2]}
         camera={{ position: [0, 0, 60], fov: 35 }}

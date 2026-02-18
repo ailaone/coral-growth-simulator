@@ -49,7 +49,7 @@ export function generateTree(params: Record<string, number>): Branch[] {
     direction: Vector3,
     length: number,
     radius: number,
-    depth: number
+    depth: number,
   ) {
     const end = origin.clone().add(direction.clone().multiplyScalar(length));
     branches.push({ start: origin.clone(), end: end.clone(), radius, depth });
@@ -205,8 +205,8 @@ export function fillDistanceField(
     const abLenSq = abx * abx + aby * aby + abz * abz;
 
     // Expand radius for falloff margin — field drops to 0 at edge of margin.
-    // Guarantee at least 3 voxels of spread so thin branches are always captured.
-    const margin = Math.max(r * 2, voxelSize * 3);
+    // Guarantee at least 4 voxels of spread so thin branches are always captured.
+    const margin = Math.max(r * 2, voxelSize * 4);
 
     // Axis-aligned bounding box of the capsule, in world coords
     const minX = Math.min(ax, bx) - margin;
@@ -266,6 +266,93 @@ export function fillDistanceField(
               : (1 - normalized) * (1 - normalized);  // Quadratic outside
             const idx = ix + iyOff + izOff;
             field[idx] += influence * falloff;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ─── Junction fillet spheres ─────────────────────────────────────────────────
+// Place extra metaball spheres at every branch junction to create smooth,
+// blobby fillets where branches meet. The sphere radius at each junction is
+// proportional to the thickest branch meeting there, scaled by "blobiness".
+
+export function fillJunctionSpheres(
+  branches: Branch[],
+  field: Float32Array,
+  resolution: number,
+  mcSize: number,
+  influence: number,
+  blobiness: number,
+): void {
+  if (blobiness <= 0) return;
+
+  const halfSize = mcSize / 2;
+  const voxelSize = mcSize / resolution;
+  const limit = resolution - 1;
+
+  // Collect junction points: snap positions to a small grid to find shared points.
+  // Key = rounded position string, value = max radius at that point.
+  const junctionMap = new Map<string, { x: number; y: number; z: number; maxR: number; count: number }>();
+  const snap = voxelSize * 0.5; // snap tolerance
+
+  function addPoint(px: number, py: number, pz: number, r: number) {
+    const kx = Math.round(px / snap) * snap;
+    const ky = Math.round(py / snap) * snap;
+    const kz = Math.round(pz / snap) * snap;
+    const key = `${kx},${ky},${kz}`;
+    const existing = junctionMap.get(key);
+    if (existing) {
+      existing.maxR = Math.max(existing.maxR, r);
+      existing.count++;
+    } else {
+      junctionMap.set(key, { x: px, y: py, z: pz, maxR: r, count: 1 });
+    }
+  }
+
+  for (const branch of branches) {
+    addPoint(branch.start.x, branch.start.y, branch.start.z, branch.radius);
+    addPoint(branch.end.x, branch.end.y, branch.end.z, branch.radius);
+  }
+
+  // Only place spheres at actual junctions (2+ branches meeting)
+  for (const jn of junctionMap.values()) {
+    if (jn.count < 2) continue;
+
+    const sphereR = jn.maxR * (1 + blobiness);
+    const margin = Math.max(sphereR * 2, voxelSize * 4);
+
+    // AABB for the sphere
+    const ix0 = Math.max(0, Math.floor((jn.x - margin + halfSize) / voxelSize));
+    const ix1 = Math.min(limit, Math.ceil((jn.x + margin + halfSize) / voxelSize));
+    const iy0 = Math.max(0, Math.floor((jn.y - margin + halfSize) / voxelSize));
+    const iy1 = Math.min(limit, Math.ceil((jn.y + margin + halfSize) / voxelSize));
+    const iz0 = Math.max(0, Math.floor((jn.z - margin + halfSize) / voxelSize));
+    const iz1 = Math.min(limit, Math.ceil((jn.z + margin + halfSize) / voxelSize));
+
+    for (let iz = iz0; iz <= iz1; iz++) {
+      const wz = iz * voxelSize - halfSize;
+      const izOff = iz * resolution * resolution;
+
+      for (let iy = iy0; iy <= iy1; iy++) {
+        const wy = iy * voxelSize - halfSize;
+        const iyOff = iy * resolution;
+
+        for (let ix = ix0; ix <= ix1; ix++) {
+          const wx = ix * voxelSize - halfSize;
+
+          const dx = wx - jn.x, dy = wy - jn.y, dz = wz - jn.z;
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          const sphereDist = dist - sphereR;
+
+          if (sphereDist < margin) {
+            const normalized = sphereDist / margin;
+            const falloff = normalized <= 0
+              ? 1
+              : (1 - normalized) * (1 - normalized);
+            const idx = ix + iyOff + izOff;
+            field[idx] += influence * blobiness * falloff;
           }
         }
       }
@@ -394,8 +481,12 @@ export function displaceVertices(
   noiseAmount: number,
   noiseScale: number,
   mcSize: number,
+  resolution: number,
 ): void {
   const halfSize = mcSize / 2;
+  const voxelSize = mcSize / resolution;
+  // Clamp displacement so it never exceeds 1.5 voxels — prevents thin branches inverting
+  const maxDisp = voxelSize * 1.5;
   const vertexCount = positions.length / 3;
 
   // Find max Y for height mask
@@ -417,7 +508,11 @@ export function displaceVertices(
     const heightMask = 0.3 + 0.7 * Math.max(0, wy / maxY);
 
     const n = simplex3(wx * noiseScale * 0.1, wy * noiseScale * 0.1, wz * noiseScale * 0.1);
-    const displacement = n * noiseAmount * heightMask;
+    let displacement = n * noiseAmount * heightMask;
+
+    // Clamp to prevent self-intersection on thin branches
+    if (displacement > maxDisp) displacement = maxDisp;
+    else if (displacement < -maxDisp) displacement = -maxDisp;
 
     // Displace along normal (in normalized MC space)
     const nx = normals[idx];

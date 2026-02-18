@@ -13,10 +13,12 @@ interface AppState {
   floorY: number;
   focusCenter: [number, number, number];
   focusRadius: number;
+  paramsDirty: boolean;
+  zoomTrigger: number;
 
   // Actions
   setParam: (key: string, value: number) => void;
-  setRenderParam: (params: Partial<Pick<CoralConfig, 'mcResolution' | 'mcThickness' | 'color' | 'edgeColor' | 'edgeThickness' | 'useTexture'>>) => void;
+  setRenderParam: (params: Partial<Pick<CoralConfig, 'mcResolution' | 'mcThickness' | 'blobiness' | 'color' | 'edgeColor' | 'edgeThickness' | 'useTexture'>>) => void;
   resetSimulation: () => void;
   triggerMesh: () => void;
   toggleWireframe: () => void;
@@ -24,6 +26,7 @@ interface AppState {
   setMeshGeometry: (geo: BufferGeometry | null, scale?: number) => void;
   setFloorY: (y: number) => void;
   setFocusTarget: (center: [number, number, number], radius: number) => void;
+  zoomExtents: () => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -37,8 +40,11 @@ export const useStore = create<AppState>((set) => ({
   floorY: 0,
   focusCenter: [0, -15, 0],
   focusRadius: 20,
+  paramsDirty: false,
+  zoomTrigger: 0,
 
   setParam: (key, value) => set((state) => ({
+    paramsDirty: true,
     config: {
       ...state.config,
       params: { ...state.config.params, [key]: value }
@@ -51,6 +57,7 @@ export const useStore = create<AppState>((set) => ({
 
   // Run: new tree, clear any existing mesh
   resetSimulation: () => set((state) => ({
+    paramsDirty: false,
     resetTrigger: state.resetTrigger + 1,
     meshTrigger: 0,
     meshGeometry: null,
@@ -78,4 +85,5 @@ export const useStore = create<AppState>((set) => ({
   }),
   setFloorY: (y) => set({ floorY: y }),
   setFocusTarget: (center, radius) => set({ focusCenter: center, focusRadius: radius }),
+  zoomExtents: () => set((state) => ({ zoomTrigger: state.zoomTrigger + 1 })),
 }));

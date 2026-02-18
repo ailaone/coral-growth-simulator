@@ -5,6 +5,7 @@ export interface CoralConfig {
   sliders: SliderDef[];
   mcResolution: number;
   mcThickness: number;
+  blobiness: number;
   color: string;
   edgeColor: string;
   edgeThickness: number;
@@ -36,7 +37,8 @@ export const DEFAULT_CONFIG: CoralConfig = {
   ],
   mcResolution: 200,
   mcThickness: 75,
-  color: '#8B4513',
+  blobiness: 0.5,
+  color: '#ffebc9',
   edgeColor: '#000000',
   edgeThickness: 0.5,
   useTexture: true,

@@ -14,7 +14,7 @@ import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeome
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { useStore } from '../store';
 import { CeramicMaterial } from './CeramicMaterial';
-import { generateTree, fillDistanceField, displaceVertices, Branch } from '../simulation/lsystem';
+import { generateTree, fillDistanceField, fillJunctionSpheres, displaceVertices, Branch } from '../simulation/lsystem';
 
 export const Coral: React.FC = () => {
   const {
@@ -86,8 +86,6 @@ export const Coral: React.FC = () => {
       else byDepth.set(b.depth, [b]);
     }
 
-    const baseColor = new Color(config.color);
-
     return Array.from(byDepth.entries()).map(([depth, bs]) => {
       const t = maxDepth > 0 ? depth / maxDepth : 0;
 
@@ -110,7 +108,7 @@ export const Coral: React.FC = () => {
       const opacity = 1.0 - t * 0.5;   // 1.0 → 0.5
 
       const mat = new LineMaterial({
-        color: baseColor.getHex(),
+        color: 0x000000,
         linewidth,
         opacity,
         transparent: true,
@@ -118,7 +116,7 @@ export const Coral: React.FC = () => {
 
       return new LineSegments2(geo, mat);
     });
-  }, [branches, config.color]);
+  }, [branches]);
 
   // Update LineMaterial resolution on resize
   useEffect(() => {
@@ -168,6 +166,7 @@ export const Coral: React.FC = () => {
     const field = (mc as any).field as Float32Array;
 
     fillDistanceField(shiftedBranches, field, actualResolution, mcSize, INFLUENCE);
+    fillJunctionSpheres(shiftedBranches, field, actualResolution, mcSize, INFLUENCE, config.blobiness);
 
     if (mc.blur) mc.blur(1);
     mc.isolation = isolation;
@@ -191,7 +190,7 @@ export const Coral: React.FC = () => {
     // 3. Displace AFTER welding (shared vertices now have averaged normals)
     const positions = welded.attributes.position.array as Float32Array;
     const normals = welded.attributes.normal.array as Float32Array;
-    displaceVertices(positions, normals, config.params.noiseAmount, config.params.noiseScale, mcSize);
+    displaceVertices(positions, normals, config.params.noiseAmount, config.params.noiseScale, mcSize, actualResolution);
     welded.attributes.position.needsUpdate = true;
     welded.computeVertexNormals();
 
@@ -216,7 +215,7 @@ export const Coral: React.FC = () => {
     // Dispose temporary objects
     if ((mc as any).geometry) (mc as any).geometry.dispose();
     cloned.dispose();
-  }, [meshTrigger, config.mcResolution, config.mcThickness, config.params.noiseAmount, config.params.noiseScale]);
+  }, [meshTrigger, config.mcResolution, config.mcThickness, config.blobiness, config.params.noiseAmount, config.params.noiseScale]);
 
   // ─── Wireframe overlay (Line2 for thickness control) ─────────────────
   const wireObject = useMemo(() => {

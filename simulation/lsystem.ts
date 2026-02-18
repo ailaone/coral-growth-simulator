@@ -204,8 +204,9 @@ export function fillDistanceField(
     const abx = bx - ax, aby = by - ay, abz = bz - az;
     const abLenSq = abx * abx + aby * aby + abz * abz;
 
-    // Expand radius for falloff margin — field drops to 0 at 2× radius
-    const margin = r * 2;
+    // Expand radius for falloff margin — field drops to 0 at edge of margin.
+    // Guarantee at least 3 voxels of spread so thin branches are always captured.
+    const margin = Math.max(r * 2, voxelSize * 3);
 
     // Axis-aligned bounding box of the capsule, in world coords
     const minX = Math.min(ax, bx) - margin;

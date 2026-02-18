@@ -68,7 +68,7 @@ export const UIControls: React.FC = () => {
       {/* Header */}
       <header className="flex justify-between items-start pointer-events-auto">
         <div>
-          <h1 className="text-2xl font-light tracking-wide uppercase mb-1">Coral</h1>
+          <h1 className="text-5xl tracking-wide uppercase mb-2" style={{ fontFamily: "'Playfair Display', serif", fontWeight: 400 }}>Coral-Gen</h1>
           <p className="text-xs font-mono opacity-60">GENERATIVE SIMULATION /// L-SYSTEM</p>
         </div>
       </header>
@@ -141,26 +141,39 @@ export const UIControls: React.FC = () => {
                     </button>
                   </div>
 
+                  {showWireframe && (
+                    <>
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-xs uppercase font-medium">Edge Color</span>
+                        <input
+                          type="color"
+                          value={config.edgeColor}
+                          onChange={(e) => setRenderParam({ edgeColor: e.target.value })}
+                          className="w-8 h-8 rounded-full border border-[#C9C5BA] cursor-pointer overflow-hidden p-0"
+                        />
+                      </div>
+                      <ControlSlider
+                        label="Edge Thickness"
+                        value={config.edgeThickness}
+                        min={0.2} max={3} step={0.1}
+                        onChange={(v) => setRenderParam({ edgeThickness: v })}
+                      />
+                    </>
+                  )}
+
                   <ControlSlider
-                    label="Resolution"
+                    label="Detail"
                     value={config.mcResolution}
-                    min={32} max={180} step={1}
+                    min={32} max={300} step={1}
                     onChange={(v) => setRenderParam({ mcResolution: v })}
-                    desc="Grid size (rebuild with Make 3D)"
+                    desc="Voxel density (scales with coral size)"
                   />
                   <ControlSlider
-                    label="Isolation"
-                    value={config.mcIsolation}
-                    min={5} max={200} step={1}
-                    onChange={(v) => setRenderParam({ mcIsolation: v })}
-                    desc="Surface threshold (Low: Thick, High: Thin)"
-                  />
-                  <ControlSlider
-                    label="Influence"
-                    value={config.mcPointInfluence}
-                    min={20} max={300} step={5}
-                    onChange={(v) => setRenderParam({ mcPointInfluence: v })}
-                    desc="Branch field strength"
+                    label="Thickness"
+                    value={config.mcThickness}
+                    min={0} max={100} step={1}
+                    onChange={(v) => setRenderParam({ mcThickness: v })}
+                    desc="Low: Thin/detailed, High: Thick/fused"
                   />
                 </div>
               </>

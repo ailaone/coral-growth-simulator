@@ -10,25 +10,33 @@ interface AppState {
   showMesh: boolean;
   meshGeometry: BufferGeometry | null;
   meshScale: number;
+  floorY: number;
+  focusCenter: [number, number, number];
+  focusRadius: number;
 
   // Actions
   setParam: (key: string, value: number) => void;
-  setRenderParam: (params: Partial<Pick<CoralConfig, 'mcResolution' | 'mcIsolation' | 'mcPointInfluence' | 'color' | 'useTexture'>>) => void;
+  setRenderParam: (params: Partial<Pick<CoralConfig, 'mcResolution' | 'mcThickness' | 'color' | 'edgeColor' | 'edgeThickness' | 'useTexture'>>) => void;
   resetSimulation: () => void;
   triggerMesh: () => void;
   toggleWireframe: () => void;
   toggleShowMesh: () => void;
   setMeshGeometry: (geo: BufferGeometry | null, scale?: number) => void;
+  setFloorY: (y: number) => void;
+  setFocusTarget: (center: [number, number, number], radius: number) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
   config: { ...DEFAULT_CONFIG, params: { ...DEFAULT_CONFIG.params } },
   resetTrigger: 0,
   meshTrigger: 0,
-  showWireframe: false,
+  showWireframe: true,
   showMesh: true,
   meshGeometry: null,
   meshScale: 1,
+  floorY: 0,
+  focusCenter: [0, -15, 0],
+  focusRadius: 20,
 
   setParam: (key, value) => set((state) => ({
     config: {
@@ -68,4 +76,6 @@ export const useStore = create<AppState>((set) => ({
     meshGeometry: geo,
     ...(scale !== undefined ? { meshScale: scale } : {}),
   }),
+  setFloorY: (y) => set({ floorY: y }),
+  setFocusTarget: (center, radius) => set({ focusCenter: center, focusRadius: radius }),
 }));

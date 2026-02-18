@@ -4,9 +4,10 @@ export interface CoralConfig {
   params: Record<string, number>;
   sliders: SliderDef[];
   mcResolution: number;
-  mcIsolation: number;
-  mcPointInfluence: number;
+  mcThickness: number;
   color: string;
+  edgeColor: string;
+  edgeThickness: number;
   useTexture: boolean;
 }
 
@@ -33,9 +34,10 @@ export const DEFAULT_CONFIG: CoralConfig = {
     { key: 'noiseAmount', label: 'Noise Amount', min: 0, max: 2, step: 0.1 },
     { key: 'noiseScale', label: 'Noise Scale', min: 0.5, max: 5, step: 0.1 },
   ],
-  mcResolution: 128,
-  mcIsolation: 40,
-  mcPointInfluence: 100,
+  mcResolution: 200,
+  mcThickness: 75,
   color: '#8B4513',
+  edgeColor: '#000000',
+  edgeThickness: 0.5,
   useTexture: true,
 };

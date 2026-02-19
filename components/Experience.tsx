@@ -62,8 +62,8 @@ export const Experience: React.FC = () => {
 
           <EffectComposer multisampling={2} enableNormalPass>
             <SSAO
-              radius={0.12}
-              intensity={30}
+              radius={0.2}
+              intensity={4}
               luminanceInfluence={0.5}
               color={new Color(0x000000)}
             />

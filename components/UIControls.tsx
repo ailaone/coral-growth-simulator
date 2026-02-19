@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Mesh, Matrix4 } from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { useStore } from '../store';
+import { V1_SLIDERS, V2_SLIDERS } from '../types';
 
 export const UIControls: React.FC = () => {
   const {
@@ -9,6 +10,7 @@ export const UIControls: React.FC = () => {
     triggerMesh,
     config,
     setParam,
+    setCoralType,
     setRenderParam,
     meshTrigger,
     meshGeometry,
@@ -20,7 +22,9 @@ export const UIControls: React.FC = () => {
     zoomExtents,
   } = useStore();
 
-  const [activeTab, setActiveTab] = useState<'growth' | 'mesh'>('growth');
+  const [activeTab, setActiveTab] = useState<'type1' | 'type2' | 'mesh'>(
+    config.coralType === 2 ? 'type2' : 'type1'
+  );
   const [showExportMenu, setShowExportMenu] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
@@ -45,7 +49,6 @@ export const UIControls: React.FC = () => {
     const geo = meshGeometry.clone();
 
     if (zUp) {
-      // Rotate +90° around X: Y-up → Z-up (Rhino, most CAD)
       geo.applyMatrix4(new Matrix4().makeRotationX(Math.PI / 2));
     }
 
@@ -53,15 +56,27 @@ export const UIControls: React.FC = () => {
     const exporter = new STLExporter();
     const buffer = exporter.parse(tempMesh, { binary: true }) as DataView;
 
+    const activeParams = config.coralType === 1 ? config.paramsV1 : config.paramsV2;
     const blob = new Blob([buffer.buffer as ArrayBuffer], { type: 'application/octet-stream' });
     const link = document.createElement('a');
     const axis = zUp ? 'zup' : 'yup';
-    link.download = `coral-seed${Math.round(config.params.seed)}-gen${Math.round(config.params.generations)}-${axis}.stl`;
+    link.download = `coral-t${config.coralType}-seed${Math.round(activeParams.seed)}-${axis}.stl`;
     link.href = URL.createObjectURL(blob);
     link.click();
     URL.revokeObjectURL(link.href);
     geo.dispose();
   };
+
+  // When switching type tabs, also update the active coral type in the store
+  const handleTabClick = (tab: 'type1' | 'type2' | 'mesh') => {
+    setActiveTab(tab);
+    if (tab === 'type1') setCoralType(1);
+    else if (tab === 'type2') setCoralType(2);
+  };
+
+  // Determine which sliders and params to show
+  const activeSliders = config.coralType === 1 ? V1_SLIDERS : V2_SLIDERS;
+  const activeParams = config.coralType === 1 ? config.paramsV1 : config.paramsV2;
 
   return (
     <>
@@ -159,17 +174,27 @@ export const UIControls: React.FC = () => {
         <div className="p-8 flex-1 overflow-y-auto">
           <h2 className="text-sm font-semibold uppercase tracking-wider mb-8">Parameters</h2>
 
-          {/* Tab switcher */}
+          {/* Tab switcher — 3 tabs */}
           <div className="flex space-x-1 mb-6 border-b border-[#C9C5BA]">
             <button
-              onClick={() => setActiveTab('growth')}
+              onClick={() => handleTabClick('type1')}
               className={`pb-2 px-3 text-xs font-bold uppercase tracking-wider transition-colors ${
-                activeTab === 'growth'
+                activeTab === 'type1'
                   ? 'border-b-2 border-[#1A1A1A] opacity-100'
                   : 'opacity-40 hover:opacity-70'
               }`}
             >
-              Growth
+              Type 1
+            </button>
+            <button
+              onClick={() => handleTabClick('type2')}
+              className={`pb-2 px-3 text-xs font-bold uppercase tracking-wider transition-colors ${
+                activeTab === 'type2'
+                  ? 'border-b-2 border-[#1A1A1A] opacity-100'
+                  : 'opacity-40 hover:opacity-70'
+              }`}
+            >
+              Type 2
             </button>
             <button
               onClick={() => setActiveTab('mesh')}
@@ -183,15 +208,18 @@ export const UIControls: React.FC = () => {
             </button>
           </div>
 
-          {/* Growth tab */}
-          {activeTab === 'growth' && (
+          {/* Type 1 / Type 2 tab — shows sliders for the active type */}
+          {(activeTab === 'type1' || activeTab === 'type2') && (
             <div className="space-y-5">
-              <p className="text-[10px] opacity-40">Re-run to apply changes</p>
-              {config.sliders.map(slider => (
+              <p className="text-[10px] opacity-40">
+                {activeTab === 'type1' ? 'Classic L-system' : "Kitaoka physics (Murray's law)"}
+                {' — re-run to apply changes'}
+              </p>
+              {activeSliders.map(slider => (
                 <ControlSlider
                   key={slider.key}
                   label={slider.label}
-                  value={config.params[slider.key] ?? 0}
+                  value={activeParams[slider.key] ?? 0}
                   min={slider.min}
                   max={slider.max}
                   step={slider.step}
@@ -279,6 +307,27 @@ export const UIControls: React.FC = () => {
                 min={0} max={2} step={0.1}
                 onChange={(v) => setRenderParam({ blobiness: v })}
                 desc="Adds metaball spheres at branch junctions"
+              />
+              <ControlSlider
+                label="Smoothing"
+                value={config.smoothing}
+                min={0} max={20} step={1}
+                onChange={(v) => setRenderParam({ smoothing: v })}
+                desc="Laplacian smoothing passes on the mesh"
+              />
+              <ControlSlider
+                label="Noise Amount"
+                value={config.noiseAmount}
+                min={0} max={2} step={0.1}
+                onChange={(v) => setRenderParam({ noiseAmount: v })}
+                desc="Surface roughness — organic texture"
+              />
+              <ControlSlider
+                label="Noise Scale"
+                value={config.noiseScale}
+                min={0.5} max={5} step={0.1}
+                onChange={(v) => setRenderParam({ noiseScale: v })}
+                desc="Noise frequency — low = broad bumps, high = fine detail"
               />
             </div>
           )}

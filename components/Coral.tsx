@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useThree } from '@react-three/fiber';
 import {
+  BufferAttribute,
   BufferGeometry,
   Color,
   MeshBasicMaterial,
@@ -14,7 +15,7 @@ import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeome
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { useStore } from '../store';
 import { CeramicMaterial } from './CeramicMaterial';
-import { generateTree, fillDistanceField, fillJunctionSpheres, displaceVertices, Branch } from '../simulation/lsystem';
+import { generateTreeClassic, generateTreeKitaoka, fillDistanceField, fillJunctionSpheres, displaceVertices, Branch } from '../simulation/lsystem';
 
 export const Coral: React.FC = () => {
   const {
@@ -36,7 +37,9 @@ export const Coral: React.FC = () => {
 
   // ─── Stage 1: Generate tree on Run ─────────────────────────────────────
   useEffect(() => {
-    setBranches(generateTree(config.params));
+    const params = config.coralType === 1 ? config.paramsV1 : config.paramsV2;
+    const generate = config.coralType === 1 ? generateTreeClassic : generateTreeKitaoka;
+    setBranches(generate(params));
     setSolidGeo(null);
   }, [resetTrigger]);
 
@@ -57,10 +60,11 @@ export const Coral: React.FC = () => {
         if (p.z < minZ) minZ = p.z;
         if (p.z > maxZ) maxZ = p.z;
       }
-      if (b.radius > maxRadius) maxRadius = b.radius;
+      const br = Math.max(b.startRadius, b.endRadius);
+      if (br > maxRadius) maxRadius = br;
     }
 
-    const pad = maxRadius * 3;
+    const pad = maxRadius * 4;
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     const cz = (minZ + maxZ) / 2;
@@ -169,10 +173,14 @@ export const Coral: React.FC = () => {
     // Scale resolution by bounding box so voxel density stays consistent
     // At reference size 20, slider value = actual resolution. Larger corals get more voxels.
     const REFERENCE_SIZE = 20;
-    const actualResolution = Math.min(Math.round(config.mcResolution * mcSize / REFERENCE_SIZE), 350);
+    const actualResolution = Math.min(Math.round(config.mcResolution * mcSize / REFERENCE_SIZE), 280);
+
+    // maxPolyCount is in VERTICES (not triangles). Buffer = maxPolyCount * 3 floats.
+    // Scale with resolution to prevent buffer overflow that creates flat-plane artifacts.
+    const maxPolyCount = Math.max(5000000, actualResolution * actualResolution * 30);
 
     // Create MC as a computation tool only (not rendered directly)
-    const mc = new MarchingCubes(actualResolution, new MeshBasicMaterial(), true, true, 1200000);
+    const mc = new MarchingCubes(actualResolution, new MeshBasicMaterial(), true, true, maxPolyCount);
     mc.reset();
     const field = (mc as any).field as Float32Array;
 
@@ -180,37 +188,127 @@ export const Coral: React.FC = () => {
     fillJunctionSpheres(shiftedBranches, field, actualResolution, mcSize, INFLUENCE, config.blobiness);
 
     if (mc.blur) mc.blur(1);
+
     mc.isolation = isolation;
     mc.update();
 
+    // Extract only the valid vertices (MC buffer is much larger than actual output)
+    const mcCount = (mc as any).count as number;
     const rawGeo = (mc as any).geometry as BufferGeometry;
-    if (!rawGeo || !rawGeo.attributes.position || rawGeo.attributes.position.count === 0) {
+    if (!rawGeo || mcCount === 0) {
       setSolidGeo(null);
       setMeshGeometry(null);
       if ((mc as any).geometry) (mc as any).geometry.dispose();
       return;
     }
 
-    // 1. Clone the raw MC output (triangle soup)
-    const cloned = rawGeo.clone();
+    // 1. Trim MC output to actual vertex count (buffer has millions of unused zeros)
+    const trimmedGeo = new BufferGeometry();
+    trimmedGeo.setAttribute('position', new BufferAttribute(
+      (rawGeo.attributes.position.array as Float32Array).slice(0, mcCount * 3), 3
+    ));
+    trimmedGeo.setAttribute('normal', new BufferAttribute(
+      (rawGeo.attributes.normal.array as Float32Array).slice(0, mcCount * 3), 3
+    ));
 
-    // 2. Weld vertices FIRST (while positions are still coincident)
-    const welded = mergeVertices(cloned, 0.0001);
+    // 2. Weld vertices (while positions are still coincident)
+    const welded = mergeVertices(trimmedGeo, 0.0001);
     welded.computeVertexNormals();
 
-    // 3. Displace AFTER welding (shared vertices now have averaged normals)
+    // 3. Scale from MC normalized [-1,1] space to world size
     const positions = welded.attributes.position.array as Float32Array;
-    const normals = welded.attributes.normal.array as Float32Array;
-    displaceVertices(positions, normals, config.params.noiseAmount, config.params.noiseScale, mcSize, actualResolution);
-    welded.attributes.position.needsUpdate = true;
-    welded.computeVertexNormals();
-
-    // Scale from MC normalized [-1,1] space to world size
     const halfMC = mcSize / 2;
     for (let i = 0; i < positions.length; i++) {
       positions[i] *= halfMC;
     }
     welded.attributes.position.needsUpdate = true;
+
+    // 4. Noise displacement (in world space)
+    welded.computeVertexNormals();
+    if (config.noiseAmount > 0) {
+      const normals = welded.attributes.normal.array as Float32Array;
+      const voxelWorldSize = mcSize / actualResolution;
+      displaceVertices(positions, normals, config.noiseAmount, config.noiseScale, voxelWorldSize);
+      welded.attributes.position.needsUpdate = true;
+    }
+
+    // 5. Laplacian smoothing (after noise — smooths out the texture)
+    const smoothIters = Math.round(config.smoothing);
+    if (smoothIters > 0 && welded.index) {
+      const idx = welded.index.array;
+      const vtxCount = positions.length / 3;
+
+      // Build adjacency from index buffer
+      const neighbors: Uint32Array[] = new Array(vtxCount);
+      const neighborCounts = new Uint32Array(vtxCount);
+
+      // First pass: count neighbors
+      for (let i = 0; i < idx.length; i += 3) {
+        const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+        neighborCounts[a] += 2; neighborCounts[b] += 2; neighborCounts[c] += 2;
+      }
+      for (let i = 0; i < vtxCount; i++) {
+        neighbors[i] = new Uint32Array(neighborCounts[i]);
+        neighborCounts[i] = 0;
+      }
+
+      // Second pass: fill neighbors (may have duplicates, that's fine for averaging)
+      for (let i = 0; i < idx.length; i += 3) {
+        const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+        neighbors[a][neighborCounts[a]++] = b; neighbors[a][neighborCounts[a]++] = c;
+        neighbors[b][neighborCounts[b]++] = a; neighbors[b][neighborCounts[b]++] = c;
+        neighbors[c][neighborCounts[c]++] = a; neighbors[c][neighborCounts[c]++] = b;
+      }
+
+      const temp = new Float32Array(positions.length);
+      for (let iter = 0; iter < smoothIters; iter++) {
+        for (let i = 0; i < vtxCount; i++) {
+          const ns = neighbors[i];
+          const count = neighborCounts[i];
+          if (count === 0) {
+            temp[i * 3] = positions[i * 3];
+            temp[i * 3 + 1] = positions[i * 3 + 1];
+            temp[i * 3 + 2] = positions[i * 3 + 2];
+            continue;
+          }
+          let sx = 0, sy = 0, sz = 0;
+          for (let j = 0; j < count; j++) {
+            const ni = ns[j];
+            sx += positions[ni * 3];
+            sy += positions[ni * 3 + 1];
+            sz += positions[ni * 3 + 2];
+          }
+          // Lambda = 0.5: blend halfway toward neighbor average
+          temp[i * 3]     = positions[i * 3]     * 0.5 + (sx / count) * 0.5;
+          temp[i * 3 + 1] = positions[i * 3 + 1] * 0.5 + (sy / count) * 0.5;
+          temp[i * 3 + 2] = positions[i * 3 + 2] * 0.5 + (sz / count) * 0.5;
+        }
+        positions.set(temp);
+      }
+      welded.attributes.position.needsUpdate = true;
+    }
+
+    // 6. Ground plane clip: only flatten the stump bottom, not branches that dip below.
+    // Stump is at (0,0,0) in original coords → (-center.x, -center.y, -center.z) in shifted.
+    const baseY = -center.y;
+    const stumpX = -center.x;
+    const stumpZ = -center.z;
+    const activeParams = config.coralType === 1 ? config.paramsV1 : config.paramsV2;
+    const clipRadius = (activeParams.trunkThickness || 1) * 3;
+    const clipRadiusSq = clipRadius * clipRadius;
+    for (let i = 0; i < positions.length / 3; i++) {
+      if (positions[i * 3 + 1] < baseY) {
+        const dx = positions[i * 3] - stumpX;
+        const dz = positions[i * 3 + 2] - stumpZ;
+        if (dx * dx + dz * dz < clipRadiusSq) {
+          positions[i * 3 + 1] = baseY;
+        }
+      }
+    }
+    welded.attributes.position.needsUpdate = true;
+
+    // Final normals and bounds
+    welded.computeVertexNormals();
     welded.computeBoundingSphere();
     welded.computeBoundingBox();
 
@@ -225,8 +323,8 @@ export const Coral: React.FC = () => {
 
     // Dispose temporary objects
     if ((mc as any).geometry) (mc as any).geometry.dispose();
-    cloned.dispose();
-  }, [meshTrigger, config.mcResolution, config.mcThickness, config.blobiness, config.params.noiseAmount, config.params.noiseScale]);
+    trimmedGeo.dispose();
+  }, [meshTrigger, config.mcResolution, config.mcThickness, config.blobiness, config.smoothing, config.noiseAmount, config.noiseScale]);
 
   // ─── Wireframe overlay (Line2 for thickness control) ─────────────────
   const wireObject = useMemo(() => {

@@ -19,18 +19,20 @@ export function mulberry32(seed: number): () => number {
 export interface Branch {
   start: Vector3;
   end: Vector3;
-  radius: number;
+  startRadius: number;  // radius at start (matches parent's end for smooth taper)
+  endRadius: number;    // radius at end (this branch's computed radius)
   depth: number;
 }
 
-// ─── Tree generation ──────────────────────────────────────────────────────────
-export function generateTree(params: Record<string, number>): Branch[] {
+// ─── Classic tree generation (Type 1) ────────────────────────────────────────
+// Original L-system with fixed branch angle, taper, and generation-based depth.
+export function generateTreeClassic(params: Record<string, number>): Branch[] {
   const {
     generations = 4,
     branchAngle = 35,
     branchLength = 0.65,
     seed = 42,
-    trunkThickness = 3,
+    trunkThickness = 1,
     taper = 0.6,
     anastomosis = 0.3,
   } = params;
@@ -39,20 +41,19 @@ export function generateTree(params: Record<string, number>): Branch[] {
   const branches: Branch[] = [];
   const angleRad = (branchAngle * Math.PI) / 180;
 
-  // Branch length at the first fan level
   const primaryLen = branchLength * 8;
-  // Short stump height — just a pedestal
   const stumpHeight = primaryLen * 0.15;
 
   function recurse(
     origin: Vector3,
     direction: Vector3,
     length: number,
+    parentRadius: number,
     radius: number,
     depth: number,
   ) {
     const end = origin.clone().add(direction.clone().multiplyScalar(length));
-    branches.push({ start: origin.clone(), end: end.clone(), radius, depth });
+    branches.push({ start: origin.clone(), end: end.clone(), startRadius: parentRadius, endRadius: radius, depth });
 
     if (depth >= generations) return;
 
@@ -68,26 +69,20 @@ export function generateTree(params: Record<string, number>): Branch[] {
       const childLength = length * branchLength * (0.5 + rand() * 1.0);
       const childRadius = radius * taper;
 
-      recurse(end, childDir, childLength, childRadius, depth + 1);
+      recurse(end, childDir, childLength, radius, childRadius, depth + 1);
     }
   }
 
-  // ─── Build the coral: short stump → fan of primary branches ────────────
   const base = new Vector3(0, 0, 0);
-  const up = new Vector3(0, 1, 0);
   const stumpTop = new Vector3(0, stumpHeight, 0);
 
-  // Short stump
-  branches.push({ start: base.clone(), end: stumpTop.clone(), radius: trunkThickness, depth: 0 });
+  branches.push({ start: base.clone(), end: stumpTop.clone(), startRadius: trunkThickness, endRadius: trunkThickness, depth: 0 });
 
-  // Fan out 5-7 primary branches from stump top
-  const primaryCount = 5 + Math.floor(rand() * 3);  // 5-7
-  const jitterRadius = stumpHeight * 0.3;  // slight offset so branches don't all start at exact same point
+  const primaryCount = 5 + Math.floor(rand() * 3);
+  const jitterRadius = stumpHeight * 0.3;
 
   for (let i = 0; i < primaryCount; i++) {
-    // Spread evenly around azimuth with some jitter
     const azimuth = (i / primaryCount) * Math.PI * 2 + (rand() - 0.5) * 0.6;
-    // Fan angle from vertical: wide spread, biased outward and upward
     const fanAngle = angleRad * (1.2 + rand() * 1.0);
 
     const dir = new Vector3(
@@ -96,7 +91,6 @@ export function generateTree(params: Record<string, number>): Branch[] {
       Math.sin(fanAngle) * Math.sin(azimuth),
     ).normalize();
 
-    // Jitter start position slightly outward from stump top
     const startPos = stumpTop.clone().add(
       new Vector3(
         Math.cos(azimuth) * jitterRadius,
@@ -106,22 +100,19 @@ export function generateTree(params: Record<string, number>): Branch[] {
     );
 
     const len = primaryLen * (0.7 + rand() * 0.6);
-    const radius = trunkThickness * (0.6 + rand() * 0.3);
+    const primaryRadius = trunkThickness * (0.6 + rand() * 0.3);
 
-    recurse(startPos, dir, len, radius, 1);
+    recurse(startPos, dir, len, trunkThickness, primaryRadius, 1);
   }
 
-  // ─── Anastomosis: fuse nearby branch junctions to create loops/voids ───
   if (anastomosis > 0) {
     const fusionDist = primaryLen * 0.4;
     const nodes: { pos: Vector3; radius: number; depth: number }[] = [];
 
-    // Use branch start points (junctions), not end tips
     for (const b of branches) {
-      nodes.push({ pos: b.start, radius: b.radius, depth: b.depth });
+      nodes.push({ pos: b.start, radius: b.startRadius, depth: b.depth });
     }
 
-    // Track which nodes have already been fused (max one connection each)
     const fused = new Set<number>();
 
     for (let i = 0; i < nodes.length; i++) {
@@ -131,21 +122,236 @@ export function generateTree(params: Record<string, number>): Branch[] {
         const dist = nodes[i].pos.distanceTo(nodes[j].pos);
         if (dist < 0.5 || dist > fusionDist) continue;
 
-        // Probability decays with depth: strong at base, rare at tips
         const avgDepth = (nodes[i].depth + nodes[j].depth) / 2;
-        const depthFactor = 1 - (avgDepth / generations);  // 1.0 at root → 0.0 at leaves
-        const chance = anastomosis * depthFactor * depthFactor;  // quadratic falloff
+        const depthFactor = 1 - (avgDepth / generations);
+        const chance = anastomosis * depthFactor * depthFactor;
 
         if (rand() < chance) {
+          const fusedR = Math.min(nodes[i].radius, nodes[j].radius);
           branches.push({
             start: nodes[i].pos.clone(),
             end: nodes[j].pos.clone(),
-            radius: Math.min(nodes[i].radius, nodes[j].radius),
+            startRadius: fusedR,
+            endRadius: fusedR,
             depth: Math.max(nodes[i].depth, nodes[j].depth),
           });
           fused.add(i);
           fused.add(j);
-          break;  // move to next i
+          break;
+        }
+      }
+    }
+  }
+
+  return branches;
+}
+
+// ─── Kamiya's angle-flow equation (Eq. 6 from Kitaoka et al. 1999) ───────────
+// Given a flow fraction f for one daughter (relative to parent),
+// returns the branching angle (radians) from the parent direction.
+// Derived from minimizing total bifurcation volume (Kamiya et al. 1974).
+function kamiyaAngle(f: number, n: number): number {
+  const e = 4 / n;  // exponent ratio
+  const e2 = 2 / n;
+  const fE = Math.pow(f, e);
+  const fE2 = Math.pow(f, e2);
+  const oneMinusFE = Math.pow(1 - f, e);
+  // cos(θ) = [1 + f^(4/n) - (1-f)^(4/n)] / [2 · f^(2/n)]
+  const cosTheta = (1 + fE - oneMinusFE) / (2 * fE2);
+  // Clamp to [-1, 1] for numerical safety
+  return Math.acos(Math.max(-1, Math.min(1, cosTheta)));
+}
+
+// ─── Kitaoka-inspired tree generation (Type 2) ──────────────────────────────
+// Uses Murray's law for diameter sizing, Kamiya's equations for branching
+// angles, 90° branching plane rotation, and flow-based termination.
+export function generateTreeKitaoka(params: Record<string, number>): Branch[] {
+  const {
+    density = 4,
+    diameterExponent = 2.8,
+    asymmetry = 0.15,
+    branchLength = 3.0,
+    seed = 42,
+    trunkThickness = 1,
+    anastomosis = 0.3,
+  } = params;
+
+  const rand = mulberry32(seed);
+  const branches: Branch[] = [];
+  const n = diameterExponent;
+  const MAX_DEPTH = 20;
+
+  // Flow threshold: density controls how deep branches go
+  // density=2 → threshold=0.25 (~3 levels), density=6 → threshold=0.015 (~7 levels)
+  const flowThreshold = Math.pow(2, -density);
+
+  // Primary branch base length (scales with trunk thickness for consistent proportions)
+  const primaryLen = trunkThickness * branchLength * 2.5;
+  const stumpHeight = primaryLen * 0.15;
+
+  function recurse(
+    origin: Vector3,
+    direction: Vector3,
+    parentRadius: number,
+    radius: number,
+    depth: number,
+    flow: number,
+    planeNormal: Vector3,  // normal of the current branching plane
+  ) {
+    // Length from Kitaoka's length-to-diameter ratio (with jitter)
+    const length = radius * branchLength * (0.7 + rand() * 0.6);
+    const end = origin.clone().add(direction.clone().multiplyScalar(length));
+    branches.push({ start: origin.clone(), end: end.clone(), startRadius: parentRadius, endRadius: radius, depth });
+
+    // Flow-based termination (Kitaoka Rule 9) + safety depth cap
+    if (flow < flowThreshold || depth >= MAX_DEPTH) return;
+
+    const childCount = rand() < 0.5 ? 2 : 3;
+
+    // Generate flow fractions for each child
+    const fractions: number[] = [];
+    if (childCount === 2) {
+      // Binary split: r is the minor fraction
+      const r = (0.5 - asymmetry) + rand() * asymmetry;  // [0.5-asym, 0.5]
+      fractions.push(r, 1 - r);
+    } else {
+      // Ternary split: 3 random fractions summing to 1, with one dominant child
+      let a = 1 + rand(), b = rand(), c = rand();  // bias a to be largest
+      const sum = a + b + c;
+      fractions.push(a / sum, b / sum, c / sum);
+    }
+
+    // Sort descending so largest flow child is first (main continuation)
+    fractions.sort((a, b) => b - a);
+
+    // 90° branching plane rotation (Kitaoka Rule 8):
+    // New branching plane is perpendicular to the current one
+    const newPlaneNormal = new Vector3().crossVectors(direction, planeNormal).normalize();
+    // Fallback if direction is parallel to planeNormal
+    if (newPlaneNormal.lengthSq() < 0.001) {
+      newPlaneNormal.copy(randomPerpendicular(direction, rand));
+    }
+
+    // Place children in the branching plane
+    for (let c = 0; c < childCount; c++) {
+      const f = fractions[c];
+      const childFlow = f * flow;
+
+      // Murray's law: d_child = d_parent * f^(1/n)
+      const childRadius = radius * Math.pow(f, 1 / n);
+
+      // Kamiya's angle: derived from flow fraction
+      const angle = kamiyaAngle(f, n);
+
+      // Direction: rotate parent direction by the Kamiya angle
+      // For 2 children: one goes +angle, other goes -angle in the branching plane
+      // For 3 children: spread around the plane
+      let deflectionAxis: Vector3;
+      if (childCount === 2) {
+        deflectionAxis = c === 0
+          ? newPlaneNormal.clone()
+          : newPlaneNormal.clone().negate();
+      } else {
+        // For 3 children: spread at 0°, 120°, 240° around the branch axis
+        const azimuth = (c / childCount) * Math.PI * 2 + (rand() - 0.5) * 0.4;
+        deflectionAxis = rotateAround(newPlaneNormal, direction, azimuth).normalize();
+      }
+
+      const childDir = rotateAround(direction, deflectionAxis, angle).normalize();
+
+      recurse(end, childDir, radius, childRadius, depth + 1, childFlow, newPlaneNormal);
+    }
+  }
+
+  // ─── Build the coral: short stump → fan of primary branches ────────────
+  const base = new Vector3(0, 0, 0);
+  const stumpTop = new Vector3(0, stumpHeight, 0);
+
+  // Short stump
+  branches.push({ start: base.clone(), end: stumpTop.clone(), startRadius: trunkThickness, endRadius: trunkThickness, depth: 0 });
+
+  // Fan out 5-7 primary branches from stump top
+  const primaryCount = 5 + Math.floor(rand() * 3);
+  const jitterRadius = stumpHeight * 0.3;
+
+  // Assign flow fractions to primaries using Murray's law
+  const primaryFlows: number[] = [];
+  let flowSum = 0;
+  for (let i = 0; i < primaryCount; i++) {
+    const f = 0.7 + rand() * 0.6;  // random weight
+    primaryFlows.push(f);
+    flowSum += f;
+  }
+
+  // Fan angle range for primaries (30°–60° from vertical)
+  const minFanAngle = Math.PI / 6;
+  const maxFanAngle = Math.PI / 3;
+
+  for (let i = 0; i < primaryCount; i++) {
+    const azimuth = (i / primaryCount) * Math.PI * 2 + (rand() - 0.5) * 0.6;
+    const fanAngle = minFanAngle + rand() * (maxFanAngle - minFanAngle);
+
+    const dir = new Vector3(
+      Math.sin(fanAngle) * Math.cos(azimuth),
+      Math.cos(fanAngle),
+      Math.sin(fanAngle) * Math.sin(azimuth),
+    ).normalize();
+
+    const startPos = stumpTop.clone().add(
+      new Vector3(
+        Math.cos(azimuth) * jitterRadius,
+        (rand() - 0.5) * jitterRadius * 0.5,
+        Math.sin(azimuth) * jitterRadius,
+      )
+    );
+
+    // Murray's law: primary radius from its flow fraction
+    const fraction = primaryFlows[i] / flowSum;
+    const primaryRadius = trunkThickness * Math.pow(fraction, 1 / n);
+    const primaryFlow = fraction;  // normalized to 1.0 total
+
+    // Initial branching plane: perpendicular to the branch direction
+    const planeNormal = randomPerpendicular(dir, rand);
+
+    recurse(startPos, dir, trunkThickness, primaryRadius, 1, primaryFlow, planeNormal);
+  }
+
+  // ─── Anastomosis: fuse nearby branch junctions to create loops/voids ───
+  if (anastomosis > 0) {
+    const fusionDist = primaryLen * 0.4;
+    const nodes: { pos: Vector3; radius: number; depth: number }[] = [];
+
+    for (const b of branches) {
+      nodes.push({ pos: b.start, radius: b.startRadius, depth: b.depth });
+    }
+
+    const fused = new Set<number>();
+    // Use MAX_DEPTH as reference for depth normalization in anastomosis
+    const maxObservedDepth = branches.reduce((m, b) => Math.max(m, b.depth), 1);
+
+    for (let i = 0; i < nodes.length; i++) {
+      if (fused.has(i)) continue;
+      for (let j = i + 1; j < nodes.length; j++) {
+        if (fused.has(j)) continue;
+        const dist = nodes[i].pos.distanceTo(nodes[j].pos);
+        if (dist < 0.5 || dist > fusionDist) continue;
+
+        const avgDepth = (nodes[i].depth + nodes[j].depth) / 2;
+        const depthFactor = 1 - (avgDepth / maxObservedDepth);
+        const chance = anastomosis * depthFactor * depthFactor;
+
+        if (rand() < chance) {
+          const fusedR = Math.min(nodes[i].radius, nodes[j].radius);
+          branches.push({
+            start: nodes[i].pos.clone(),
+            end: nodes[j].pos.clone(),
+            startRadius: fusedR,
+            endRadius: fusedR,
+            depth: Math.max(nodes[i].depth, nodes[j].depth),
+          });
+          fused.add(i);
+          fused.add(j);
+          break;
         }
       }
     }
@@ -177,10 +383,11 @@ function randomPerpendicular(dir: Vector3, rand: () => number): Vector3 {
   return perp;
 }
 
-// ─── Analytical capsule distance field ──────────────────────────────────────
-// Each branch is a capsule: cylinder + hemisphere caps at both ends.
+// ─── Analytical tapered-cone distance field ─────────────────────────────────
+// Each branch is a tapered cone (frustum): radius interpolates linearly from
+// startRadius at branch.start to endRadius at branch.end.
 // For each voxel in the MC grid within the branch's AABB, compute distance
-// to the capsule surface and accumulate a smooth falloff into the scalar field.
+// to the cone surface and take the MAX into the scalar field.
 
 export function fillDistanceField(
   branches: Branch[],
@@ -198,17 +405,19 @@ export function fillDistanceField(
   for (const branch of branches) {
     const ax = branch.start.x, ay = branch.start.y, az = branch.start.z;
     const bx = branch.end.x, by = branch.end.y, bz = branch.end.z;
-    const r = branch.radius;
+    const rStart = branch.startRadius;
+    const rEnd = branch.endRadius;
+    const maxR = Math.max(rStart, rEnd);
 
     // Segment direction vector
     const abx = bx - ax, aby = by - ay, abz = bz - az;
     const abLenSq = abx * abx + aby * aby + abz * abz;
 
     // Expand radius for falloff margin — field drops to 0 at edge of margin.
-    // Guarantee at least 4 voxels of spread so thin branches are always captured.
-    const margin = Math.max(r * 2, voxelSize * 4);
+    // Guarantee at least 2 voxels of spread so thin branches are captured.
+    const margin = Math.max(maxR * 2, voxelSize * 2);
 
-    // Axis-aligned bounding box of the capsule, in world coords
+    // Axis-aligned bounding box of the tapered cone, in world coords
     const minX = Math.min(ax, bx) - margin;
     const maxX = Math.max(ax, bx) + margin;
     const minY = Math.min(ay, by) - margin;
@@ -242,30 +451,37 @@ export function fillDistanceField(
           let t = abLenSq > 0
             ? (apx * abx + apy * aby + apz * abz) / abLenSq
             : 0;
-          // Clamp to [0,1] — this gives hemisphere caps at endpoints
+          // Clamp to [0,1] — hemisphere caps at endpoints
           if (t < 0) t = 0;
           else if (t > 1) t = 1;
+
+          // Interpolated radius at parameter t (linear taper)
+          const rAtT = rStart + t * (rEnd - rStart);
 
           // Closest point on segment
           const cx = ax + t * abx;
           const cy = ay + t * aby;
           const cz = az + t * abz;
 
-          // Distance from P to closest point on segment
+          // Distance from P to closest point on segment (axis distance)
           const dx = wx - cx, dy = wy - cy, dz = wz - cz;
           const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-          // Capsule distance: negative means inside the capsule
-          const capsuleDist = dist - r;
+          // Cone distance: negative means inside the tapered cone
+          const coneDist = dist - rAtT;
 
-          if (capsuleDist < margin) {
+          // Use local margin based on interpolated radius
+          const localMargin = Math.max(rAtT * 2, voxelSize * 2);
+
+          if (coneDist < localMargin) {
             // Smooth quadratic falloff: 1 inside, tapering to 0 at margin
-            const normalized = capsuleDist / margin;
+            const normalized = coneDist / localMargin;
             const falloff = normalized <= 0
-              ? 1  // Inside the capsule — full contribution
+              ? 1  // Inside the cone — full contribution
               : (1 - normalized) * (1 - normalized);  // Quadratic outside
             const idx = ix + iyOff + izOff;
-            field[idx] += influence * falloff;
+            const val = influence * falloff;
+            if (val > field[idx]) field[idx] = val;
           }
         }
       }
@@ -312,8 +528,8 @@ export function fillJunctionSpheres(
   }
 
   for (const branch of branches) {
-    addPoint(branch.start.x, branch.start.y, branch.start.z, branch.radius);
-    addPoint(branch.end.x, branch.end.y, branch.end.z, branch.radius);
+    addPoint(branch.start.x, branch.start.y, branch.start.z, branch.startRadius);
+    addPoint(branch.end.x, branch.end.y, branch.end.z, branch.endRadius);
   }
 
   // Only place spheres at actual junctions (2+ branches meeting)
@@ -321,7 +537,7 @@ export function fillJunctionSpheres(
     if (jn.count < 2) continue;
 
     const sphereR = jn.maxR * (1 + blobiness);
-    const margin = Math.max(sphereR * 2, voxelSize * 4);
+    const margin = Math.max(sphereR * 2, voxelSize * 2);
 
     // AABB for the sphere
     const ix0 = Math.max(0, Math.floor((jn.x - margin + halfSize) / voxelSize));
@@ -474,53 +690,51 @@ export function simplex3(xin: number, yin: number, zin: number): number {
   return 32 * (n0 + n1 + n2 + n3);
 }
 
-// ─── Vertex displacement ──────────────────────────────────────────────────────
+// ─── Vertex displacement (world space) ───────────────────────────────────────
+// Positions are already in world-space (shifted) coordinates.
 export function displaceVertices(
   positions: Float32Array,
   normals: Float32Array,
   noiseAmount: number,
   noiseScale: number,
-  mcSize: number,
-  resolution: number,
+  voxelWorldSize: number,
 ): void {
-  const halfSize = mcSize / 2;
-  const voxelSize = mcSize / resolution;
   // Clamp displacement so it never exceeds 1.5 voxels — prevents thin branches inverting
-  const maxDisp = voxelSize * 1.5;
+  const maxDisp = voxelWorldSize * 1.5;
   const vertexCount = positions.length / 3;
 
   // Find max Y for height mask
   let maxY = 0;
   for (let i = 0; i < vertexCount; i++) {
-    const worldY = positions[i * 3 + 1] * halfSize;
-    if (worldY > maxY) maxY = worldY;
+    if (positions[i * 3 + 1] > maxY) maxY = positions[i * 3 + 1];
   }
   if (maxY < 0.01) maxY = 1;
 
   for (let i = 0; i < vertexCount; i++) {
     const idx = i * 3;
-    // MC positions are in [-1,1] normalized space; convert to world
-    const wx = positions[idx] * halfSize;
-    const wy = positions[idx + 1] * halfSize;
-    const wz = positions[idx + 2] * halfSize;
+    const wx = positions[idx];
+    const wy = positions[idx + 1];
+    const wz = positions[idx + 2];
 
     // Height mask: more displacement at tips (higher Y)
     const heightMask = 0.3 + 0.7 * Math.max(0, wy / maxY);
 
-    const n = simplex3(wx * noiseScale * 0.1, wy * noiseScale * 0.1, wz * noiseScale * 0.1);
+    // Multi-octave fractal noise: broad bumps + medium detail + fine per-vertex texture
+    const f1 = noiseScale * 0.1;   // broad regional variation
+    const f2 = noiseScale * 0.5;   // medium detail
+    const f3 = noiseScale * 2.0;   // fine per-vertex texture
+    const n = simplex3(wx * f1, wy * f1, wz * f1) * 0.4
+            + simplex3(wx * f2 + 31.7, wy * f2 + 31.7, wz * f2 + 31.7) * 0.35
+            + simplex3(wx * f3 + 67.1, wy * f3 + 67.1, wz * f3 + 67.1) * 0.25;
     let displacement = n * noiseAmount * heightMask;
 
     // Clamp to prevent self-intersection on thin branches
     if (displacement > maxDisp) displacement = maxDisp;
     else if (displacement < -maxDisp) displacement = -maxDisp;
 
-    // Displace along normal (in normalized MC space)
-    const nx = normals[idx];
-    const ny = normals[idx + 1];
-    const nz = normals[idx + 2];
-
-    positions[idx] += (nx * displacement) / halfSize;
-    positions[idx + 1] += (ny * displacement) / halfSize;
-    positions[idx + 2] += (nz * displacement) / halfSize;
+    // Displace along normal (already in world space)
+    positions[idx]     += normals[idx] * displacement;
+    positions[idx + 1] += normals[idx + 1] * displacement;
+    positions[idx + 2] += normals[idx + 2] * displacement;
   }
 }

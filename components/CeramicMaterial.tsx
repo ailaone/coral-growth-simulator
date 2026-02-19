@@ -1,5 +1,6 @@
 import React from 'react';
 import { MeshPhysicalMaterialProps } from '@react-three/fiber';
+import { DoubleSide } from 'three';
 
 interface CeramicMaterialProps extends MeshPhysicalMaterialProps {
   color?: string;
@@ -17,6 +18,7 @@ export const CeramicMaterial = ({ color = "#EDE8DC", useTexture, ...props }: Cer
       clearcoat={0.1}
       clearcoatRoughness={0.4}
       dithering={true}
+      side={DoubleSide}
     />
   );
 };
